@@ -63,6 +63,8 @@ QODERCN_PERSONAL_ACCESS_TOKEN=your-token-here
 
 Create a token at: https://qoder.com.cn/account/integrations (displayed only once after creation — save it securely)
 
+Don't have a Qoder CN account yet? [Sign up via this link](https://qoder.com.cn/referral?referral_code=pex0n1GlDjFK4aT1BWpiCoSyEjDGD6GB) to get bonus credits.
+
 Do not commit `.env` to Git.
 
 Start the proxy:

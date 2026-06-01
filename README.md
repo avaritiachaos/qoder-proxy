@@ -63,6 +63,8 @@ QODERCN_PERSONAL_ACCESS_TOKEN=your-token-here
 
 令牌创建地址：https://qoder.com.cn/account/integrations （创建后仅显示一次，请妥善保存）
 
+还没有 Qoder CN 账号？通过[此链接注册](https://qoder.com.cn/referral?referral_code=pex0n1GlDjFK4aT1BWpiCoSyEjDGD6GB)可获得额外额度。
+
 请勿将 `.env` 提交到 Git。
 
 启动：

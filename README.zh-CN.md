@@ -1,114 +1,143 @@
 # Qoder CN Proxy
 
-> Qoder CN CLI 的本地 OpenAI-compatible 协议代理。仅供学习、研究和本地实验使用。
+把 Qoder CN 的命令行工具包装成 OpenAI / Anthropic 兼容的本地 API，这样其他软件（OpenCode、酒馆、Claude Code、紫苑等）就能直接对接了。
 
-这个项目优先面向 OpenCode，提供一个最小的本地兼容协议代理：客户端按 OpenAI Chat Completions 格式请求本服务，本服务再调用官方 Qoder CN CLI `qoderclicn`。
+仅供学习和本地实验使用。本项目不是 Qoder 或 OpenCode 的官方项目。
 
-## 免责声明
+[English](README.md)
 
-本项目不是 Qoder、Qoder CN 或 OpenCode 的官方项目，也未获得其背书或赞助。
+## 这东西是干嘛的
 
-本项目仅供学习和本地实验使用。使用者需要自行遵守上游服务、CLI、模型和账号体系的使用条款，并自行承担风险。
+简单说：Qoder CN 有个命令行工具 `qoderclicn`，但很多软件只认 OpenAI 或 Anthropic 的 API 格式。这个代理就是一个中间人——软件按 API 格式发请求过来，代理翻译成命令行调用，再把结果翻译回 API 格式返回。
+
+现在支持两种对接方式：
+
+- OpenAI 格式（`/v1/chat/completions`）—— OpenCode、酒馆、紫苑用这个
+- Anthropic 格式（/v1/messages）—— Claude Code 用这个
+
+而且两种格式都支持工具调用（tool calls / tool_use），可以跑 Agent 模式了。
+
+## 工具调用是怎么实现的
+
+因为 `qoderclicn` 只接受文本输入、只输出文本，它本身不懂什么是工具调用。所以代理的做法是：把工具定义写进 Prompt 里告诉模型"你有这些工具可以用，需要调用时输出 JSON"，然后从模型的文本回复中提取出 JSON 解析成工具调用格式。
+
+这跟直接调 DeepSeek 或 OpenAI 官方 API 是不一样的——官方 API 有独立的 `tools` 参数通道，模型原生就知道怎么处理工具调用，不需要任何额外 Prompt。反代只能用 Prompt 注入来模拟，可靠性取决于底层模型是否听话地输出 JSON。
+
+## Prompt 会不会污染角色人格
+
+不会。代理用了三条路径，只在必要时注入最少的内容：
+
+- 酒馆 / 紫苑角色扮演（自带 system prompt，不带工具）：零注入。角色人格完全由客户端的 system prompt 控制，代理什么都不加。
+- 简单对话（没有 system prompt，没有工具）：只加一句"回答对话中最新的用户消息"，不是角色定义。
+- Agent 模式（带了工具参数）：只注入 `[Tool Protocol]` 格式指令，告诉模型工具列表和输出格式，不含任何"你是..."角色定义。
+
+所以酒馆用来跑角色扮演完全不会受影响——酒馆不发 tools 参数，代理就不注入任何东西。
 
 ## 安全边界
 
-- 认证只读取环境变量 `QODERCN_PERSONAL_ACCESS_TOKEN`。
-- 服务只监听 `127.0.0.1`。
-- 日志会脱敏 Authorization、cookie、token、access_token 和 `QODERCN_PERSONAL_ACCESS_TOKEN`。
-- clean 实现不会读取 Qoder/QoderWork 桌面客户端的本地认证文件。
-- clean 实现不会扫描 `%APPDATA%`、`%LOCALAPPDATA%` 或 `%USERPROFILE%\.qoderwork`。
-- 不要把 token 写进源码、配置、README、测试、issue、截图或日志。
+- 认证只用环境变量 `QODERCN_PERSONAL_ACCESS_TOKEN`，不会读桌面客户端的登录信息
+- 只监听 `127.0.0.1`，不会暴露到网络上
+- 日志里会脱敏 token、cookie 等敏感信息
+- 不会扫描 `%APPDATA%` 或 `~/.qoderwork`
+- token 不要写进源码、测试、截图或日志
 
-根目录旧实验文件 `server.js` 已通过 `.gitignore` 排除，不会作为公开仓库内容发布。
+## 怎么装
 
-## 环境要求
-
-- Node.js 18 或更新版本
-- Qoder CN CLI
+需要 Node.js 18 或更高版本，以及 Qoder CN CLI：
 
 ```bash
 npm install -g @qodercn-ai/qoderclicn
 qoderclicn --version
 ```
 
-## 安装和启动
+然后：
 
 ```powershell
 npm install
 Copy-Item .env.example .env
 ```
 
-编辑本地 `.env`，填入：
+编辑 `.env`，填上你的令牌：
 
-```text
-QODERCN_PERSONAL_ACCESS_TOKEN=你的 token
+```
+QODERCN_PERSONAL_ACCESS_TOKEN=你的令牌
 ```
 
-可以在 Qoder CN 的集成页面创建个人访问令牌：
+令牌在这里创建：https://qoder.com.cn/account/integrations ，创建后只显示一次，保存好。
 
-```text
-https://qoder.com.cn/account/integrations
-```
+不要提交 `.env` 到 Git。
 
-令牌创建后通常只显示一次。请只把它保存在本地 `.env` 或 shell 环境变量里，不要提交到 Git。
-
-不要提交 `.env`。
-
-启动服务：
+启动：
 
 ```powershell
 npm start
 ```
 
-Windows 也可以双击：
+Windows 也可以双击 `start-proxy.cmd`。
 
-```text
-start-proxy.cmd
+## 支哪些模型
+
+`qoder-cn`、`auto`、`qwen3.7-max`、`glm-5.1`、`kimi-k2.6`、`qwen3.6-plus`、`qwen3.6-flash`、`deepseek-v4-pro`、`deepseek-v4-flash`
+
+Qwen3.7-Max 还可以直接选推理强度：`qwen3.7-max-effort-low`、`-medium`、`-high`、`-max`
+
+## 怎么接入各种软件
+
+### OpenCode
+
+仓库里自带 `opencode.json`，从项目目录启动 OpenCode 就行：
+
+```powershell
+opencode run --model qoder-cn-local/qwen3.7-max --variant high "只返回 OK"
 ```
 
-## 接口
+或直接选别名：
 
-- `GET /health`
-- `GET /v1/models`
-- `POST /v1/chat/completions`
-- `POST /v1/messages`
-- `POST /v1/messages/count_tokens`
+```powershell
+opencode run --model qoder-cn-local/qwen3.7-max-effort-high "只返回 OK"
+```
 
-当前限制：
+### 酒馆 (SillyTavern)
 
-- 只实现 OpenAI-compatible chat completions
-- Anthropic Messages 兼容层目前是纯文本模式
-- SSE streaming 格式兼容，但代理会先等待 Qoder CLI 完整返回，再一次性输出内容
-- 暂不支持 tool calls
-- 每个 chat 请求会启动一次 Qoder CN CLI 子进程
-- Qoder CN CLI 必须返回结构化 JSON，非结构化输出不会被猜测解析
+用 Chat Completion 的自定义 OpenAI 源：
 
-## 模型
+- API 类型：Chat Completion
+- Source：Custom (OpenAI-compatible)
+- Base URL：`http://127.0.0.1:3000/v1`
+- API Key：随便填，比如 `not-used`
+- Model：下拉选或手动填模型 ID
 
-代理暴露这些模型 ID：
+注意：Base URL 不要加 `/chat/completions`，也不要把 Qoder token 填进酒馆——令牌只放在代理的 `.env` 里。
 
-- `qoder-cn`
-- `auto`
-- `qwen3.7-max`
-- `glm-5.1`
-- `kimi-k2.6`
-- `qwen3.6-plus`
-- `qwen3.6-flash`
-- `deepseek-v4-pro`
-- `deepseek-v4-flash`
+### Claude Code
 
-Qwen3.7-Max 额外提供普通模型别名，方便在 OpenCode 模型列表里直接选择推理强度：
+```powershell
+$env:ANTHROPIC_BASE_URL = "http://127.0.0.1:3000"
+$env:ANTHROPIC_AUTH_TOKEN = "not-used"
+claude --model qwen3.7-max
+```
 
-- `qwen3.7-max-effort-low`
-- `qwen3.7-max-effort-medium`
-- `qwen3.7-max-effort-high`
-- `qwen3.7-max-effort-max`
+`ANTHROPIC_BASE_URL` 不要加 `/v1`，Claude Code 会自己拼路径。
 
-这些别名会映射回 Qoder CN CLI 的 `Qwen3.7-Max`，并附加对应的 `--reasoning-effort`。
+现在支持 `tool_use` 和 `tool_result` 了——Claude Code 可以真正用 Agent 模式做文件编辑和命令执行（前提是底层模型能稳定输出工具调用 JSON）。
 
-## 推理强度和输出选项
+可选的 PowerShell 快捷命令：`Claude-qwen`（对应 qwen3.7-max）、`Claude-glm`（glm-5.1）、`Claude-kimi`（kimi-k2.6）。大小写不敏感。
 
-可以用环境变量设置全局默认值：
+### 紫苑 (CodeShion)
+
+通过 OpenAI 格式 `/v1/chat/completions` 接入。带 tools 参数时走 Agent 模式（工具调用），不带 tools 时走纯对话模式——纯对话模式下代理零注入，不会污染紫苑的角色人格。
+
+## 接口一览
+
+- `GET /health` —— 健康检查
+- `GET /v1/models` —— 模型列表
+- `POST /v1/chat/completions` —— OpenAI 格式对话（支持 tools）
+- `POST /v1/messages` —— Anthropic 格式对话（支持 tool_use）
+- `POST /v1/messages/count_tokens` —— token 估算
+
+## 推理参数
+
+环境变量设全局默认：
 
 ```powershell
 $env:QODERCN_REASONING_EFFORT = "high"
@@ -116,81 +145,21 @@ $env:QODERCN_CONTEXT_WINDOW = "200000"
 $env:QODERCN_MAX_OUTPUT_TOKENS = "4096"
 ```
 
-也可以在单次请求中传入：
+也可以每次请求单独传 `reasoning_effort`、`context_window`、`max_tokens`。
 
-- `reasoning_effort` 或 `reasoningEffort`
-- `context_window` 或 `contextWindow`
-- `max_tokens` 或 `maxOutputTokens`
-- OpenCode/provider option 形态，例如 `providerOptions`
+## 当前限制
 
-## OpenCode 使用
+- 工具调用靠 Prompt 注入 + 文本解析实现，不是模型原生能力，可靠性取决于模型是否听话输出 JSON
+- 工具调用的响应不走流式，永远是完整返回
+- 文本流式是"假流式"——等 CLI 完成后一次性发出几个 chunk
+- 每次请求启动一个新的 qoderclicn 子进程
+- 如果模型输出非法 JSON 或拒绝用工具，自动降级为纯文本回复
 
-仓库内置项目级 `opencode.json`。从本项目目录启动 OpenCode 时，会使用：
-
-```text
-http://127.0.0.1:3000/v1
-```
-
-示例：
-
-```powershell
-opencode run --model qoder-cn-local/qwen3.7-max --variant high "只返回 OK"
-```
-
-或者直接选择推理强度别名：
-
-```powershell
-opencode run --model qoder-cn-local/qwen3.7-max-effort-high "只返回 OK"
-```
-
-## SillyTavern / 酒馆配置
-
-在酒馆里使用 Chat Completion 的自定义 OpenAI-compatible 源：
-
-- API 类型：`Chat Completion`
-- Chat Completion Source：`Custom (OpenAI-compatible)`
-- Custom Endpoint / Base URL：`http://127.0.0.1:3000/v1`
-- API Key：`not-used`
-- Model：从模型下拉框选择，或手动填写模型 ID
-
-Base URL 不要写成 `/v1/chat/completions`。不要把 Qoder CN token 填进酒馆；token 只放在代理运行环境或本地 `.env` 里。
-
-## Claude Code 使用
-
-Claude Code 可以指向本地 Anthropic-compatible 端点，用于纯文本模式：
-
-```powershell
-$env:ANTHROPIC_BASE_URL = "http://127.0.0.1:3000"
-$env:ANTHROPIC_AUTH_TOKEN = "not-used"
-$env:ANTHROPIC_CUSTOM_MODEL_OPTION = "qwen3.7-max"
-claude --model qwen3.7-max
-```
-
-`ANTHROPIC_BASE_URL` 不要包含 `/v1`，Claude Code 会自己拼接 API 路径。
-
-当前限制：代理不会输出 Anthropic `tool_use` 结构。Claude Code 可以收到文本回复，但真正的 agent 文件编辑和命令执行需要后续单独实现工具桥接。
-
-可选 PowerShell 快捷命令：
-
-```powershell
-function Claude-qwen { ... } # qwen3.7-max
-function Claude-glm  { ... } # glm-5.1
-function Claude-kimi { ... } # kimi-k2.6
-```
-
-PowerShell 命令名不区分大小写，所以 `Claude-qwen`、`claude-qwen`、`CLAUDE-QWEN` 等价。
-
-## curl 检查
+## 快速检查
 
 ```powershell
 curl.exe http://127.0.0.1:3000/health
-```
-
-```powershell
 curl.exe http://127.0.0.1:3000/v1/models
-```
-
-```powershell
 curl.exe http://127.0.0.1:3000/v1/chat/completions `
   -H "Content-Type: application/json" `
   -d "{\"model\":\"qoder-cn\",\"messages\":[{\"role\":\"user\",\"content\":\"只返回 OK\"}]}"
@@ -204,4 +173,4 @@ npm test
 
 ## 许可证
 
-MIT。详见 [LICENSE](LICENSE)。
+MIT。见 [LICENSE](LICENSE)。

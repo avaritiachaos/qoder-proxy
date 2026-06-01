@@ -82,11 +82,11 @@ test('builds qoderclicn attachment args without putting long prompt on command l
   const args = buildCliArgs({
     prompt: longPrompt,
     model: 'Qwen3.7-Max',
-    attachmentPath: 'D:\\tmp\\prompt.txt',
+    attachmentPath: '/tmp/prompt.txt',
   });
 
   assert.equal(args.includes('--attachment'), true);
-  assert.equal(args[args.indexOf('--attachment') + 1], 'D:\\tmp\\prompt.txt');
+  assert.equal(args[args.indexOf('--attachment') + 1], '/tmp/prompt.txt');
   assert.equal(args.includes(longPrompt), false);
   assert.match(args.at(-1), /attached OpenAI-compatible/);
 });

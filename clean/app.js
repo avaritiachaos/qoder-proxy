@@ -13,14 +13,15 @@ const {
   validateAnthropicMessagesRequest,
   writeAnthropicMessageStream,
 } = require('./anthropic');
+const {
+  parseToolCallOutput,
+  generateCallId,
+  normalizeOpenAiTools,
+  normalizeAnthropicTools,
+  formatToolResultForPrompt,
+} = require('./tool-parser');
 
 const MODEL_ID = DEFAULT_MODEL_ID;
-
-function hasToolCalls(messages) {
-  return messages.some(
-    (message) => message.role === 'tool' || message.tool_calls || message.function_call
-  );
-}
 
 function validateChatRequest(body) {
   if (!body || typeof body !== 'object') {
@@ -29,14 +30,12 @@ function validateChatRequest(body) {
   if (!Array.isArray(body.messages) || body.messages.length === 0) {
     throw new AppError(400, 'invalid_messages', 'messages must be a non-empty array.');
   }
-  if (hasToolCalls(body.messages)) {
-    throw new AppError(400, 'tool_calls_not_supported', 'Tool calls are not supported yet.');
-  }
   for (const message of body.messages) {
     if (!message || typeof message !== 'object') {
       throw new AppError(400, 'invalid_messages', 'Each message must be an object.');
     }
-    if (!['system', 'user', 'assistant'].includes(message.role)) {
+    // Allow system, user, assistant, and tool roles for multi-turn tool use
+    if (!['system', 'user', 'assistant', 'tool'].includes(message.role)) {
       throw new AppError(400, 'unsupported_role', `Unsupported message role: ${message.role}`);
     }
   }
@@ -88,7 +87,42 @@ function extractRequestOptions(body) {
   };
 }
 
-function createChatCompletion({ model, content }) {
+function createChatCompletion({ model, content, parsedOutput }) {
+  // If the CLI output was parsed as tool calls, return OpenAI tool_calls format
+  if (parsedOutput && parsedOutput.type === 'tool_calls') {
+    return {
+      id: `chatcmpl-${Date.now()}`,
+      object: 'chat.completion',
+      created: Math.floor(Date.now() / 1000),
+      model,
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: parsedOutput.prefixText || null,
+            tool_calls: parsedOutput.toolCalls.map((call) => ({
+              id: generateCallId('call_'),
+              type: 'function',
+              function: {
+                name: call.name,
+                // OpenAI spec: arguments is a JSON string, not a parsed object
+                arguments: JSON.stringify(call.arguments),
+              },
+            })),
+          },
+          finish_reason: 'tool_calls',
+        },
+      ],
+      usage: {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+      },
+    };
+  }
+
+  // Regular text response
   return {
     id: `chatcmpl-${Date.now()}`,
     object: 'chat.completion',
@@ -196,6 +230,10 @@ function createApp() {
         created: 0,
         owned_by: 'qodercn',
         name: model.name,
+        capabilities: {
+          reasoning: model.reasoning || false,
+        },
+        ...(model.effortAlias ? { effort_alias: true } : {}),
       })),
     });
   });
@@ -209,26 +247,41 @@ function createApp() {
       validateChatRequest(req.body);
       const model = req.body.model || MODEL_ID;
       const requestOptions = extractRequestOptions(req.body);
+      const tools = Array.isArray(req.body.tools) ? req.body.tools : null;
+      const normalizedTools = tools ? normalizeOpenAiTools(tools) : null;
       log('chat request accepted', {
         model,
         message_count: req.body.messages.length,
         stream: Boolean(req.body.stream),
+        tool_count: normalizedTools ? normalizedTools.length : 0,
         reasoning_effort: requestOptions.reasoningEffort,
       });
 
       const content = await qoderCli.runQoderCnCli({
         messages: req.body.messages,
         model,
+        tools: normalizedTools,
         reasoningEffort: requestOptions.reasoningEffort,
         contextWindow: requestOptions.contextWindow,
         maxOutputTokens: requestOptions.maxOutputTokens,
         signal: controller.signal,
       });
 
+      // Parse the output for tool calls if tools were provided
+      let parsedOutput = null;
+      if (normalizedTools) {
+        parsedOutput = parseToolCallOutput(content);
+      }
+
       if (req.body.stream) {
-        writeChatCompletionStream(res, { model, content });
+        // Tool calls are not streamed — downgrade to non-streaming response
+        if (parsedOutput && parsedOutput.type === 'tool_calls') {
+          res.json(createChatCompletion({ model, content, parsedOutput }));
+        } else {
+          writeChatCompletionStream(res, { model, content });
+        }
       } else {
-        res.json(createChatCompletion({ model, content }));
+        res.json(createChatCompletion({ model, content, parsedOutput }));
       }
       log('chat request completed', { duration_ms: Date.now() - started });
     } catch (error) {
@@ -251,7 +304,7 @@ function createApp() {
       validateAnthropicMessagesRequest(req.body);
       const model = req.body.model || MODEL_ID;
       const requestOptions = extractRequestOptions(req.body);
-      const messages = anthropicToOpenAiMessages(req.body);
+      const { messages, tools } = anthropicToOpenAiMessages(req.body);
       log('anthropic message request accepted', {
         model,
         message_count: req.body.messages.length,
@@ -263,16 +316,28 @@ function createApp() {
       const content = await qoderCli.runQoderCnCli({
         messages,
         model,
+        tools,
         reasoningEffort: requestOptions.reasoningEffort,
         contextWindow: requestOptions.contextWindow,
         maxOutputTokens: requestOptions.maxOutputTokens || req.body.max_tokens,
         signal: controller.signal,
       });
 
+      // Parse the output for tool calls if tools were provided
+      let parsedOutput = null;
+      if (tools) {
+        parsedOutput = parseToolCallOutput(content);
+      }
+
       if (req.body.stream) {
-        writeAnthropicMessageStream(res, { model, content });
+        // Tool calls are not streamed — downgrade to non-streaming response
+        if (parsedOutput && parsedOutput.type === 'tool_calls') {
+          res.json(createAnthropicMessage({ model, content, parsedOutput }));
+        } else {
+          writeAnthropicMessageStream(res, { model, content });
+        }
       } else {
-        res.json(createAnthropicMessage({ model, content }));
+        res.json(createAnthropicMessage({ model, content, parsedOutput }));
       }
       log('anthropic message request completed', { duration_ms: Date.now() - started });
     } catch (error) {

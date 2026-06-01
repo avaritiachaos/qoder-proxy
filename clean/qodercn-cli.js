@@ -4,6 +4,7 @@ const { spawn } = require('child_process');
 const { AppError } = require('./errors');
 const { redactString } = require('./redact');
 const { resolveModelRoute } = require('./models');
+const { buildToolSystemPrompt, formatToolResultForPrompt } = require('./tool-parser');
 
 const DEFAULT_TIMEOUT_MS = 120000;
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
@@ -27,21 +28,65 @@ function normalizeContent(content) {
 }
 
 function normalizeMessages(messages) {
-  return messages.map((message) => ({
-    role: message.role,
-    content: normalizeContent(message.content),
-  }));
+  return messages.map((message) => {
+    if (message.role === 'tool') {
+      // Format tool results with their call ID for context continuity
+      const id = message.tool_call_id || 'unknown';
+      const content = normalizeContent(message.content);
+      return {
+        role: 'tool',
+        content: `<tool_result id="${id}">\n${content}\n</tool_result>`,
+      };
+    }
+    if (message.role === 'assistant' && message.tool_calls) {
+      // Format previous assistant tool_calls for context continuity
+      const parts = [];
+      if (message.content) {
+        parts.push(normalizeContent(message.content));
+      }
+      for (const call of message.tool_calls) {
+        const name = call.function?.name || call.name || 'unknown';
+        const args = call.function?.arguments || JSON.stringify(call.arguments || {});
+        parts.push(`[assistant called tool: ${name} with arguments: ${args}]`);
+      }
+      return { role: 'assistant', content: parts.join('\n') };
+    }
+    return {
+      role: message.role,
+      content: normalizeContent(message.content),
+    };
+  });
 }
 
-function buildPrompt(messages) {
+function buildPrompt(messages, tools) {
   const normalized = normalizeMessages(messages);
-  return [
-    'You are serving an OpenAI-compatible chat completion request.',
-    'Use the full conversation JSON as context and answer the latest user request.',
-    'Return only the assistant message content. Do not include thinking traces, status logs, tool reports, or project summaries.',
-    '',
-    JSON.stringify({ messages: normalized }, null, 2),
-  ].join('\n');
+  const parts = [];
+
+  const hasSystemPrompt = normalized.some((m) => m.role === 'system');
+  const hasTools = tools && tools.length > 0;
+
+  // Three paths to minimize prompt pollution:
+  //
+  // 1. Client provides its own system prompt (SillyTavern, 紫苑, etc.)
+  //    → No injection at all. The client's instructions dominate.
+  // 2. No system prompt, no tools (simple curl/OpenCode chat)
+  //    → Minimal meta-instruction so the model knows what format to follow.
+  // 3. Tools present (Agent mode: Claude Code, 紫苑 with tools)
+  //    → Only format instructions, no role definitions.
+
+  if (hasTools) {
+    parts.push(buildToolSystemPrompt(tools));
+  } else if (hasSystemPrompt) {
+    // Client already told the model who to be — don't add anything.
+    // The JSON conversation blob below is enough context.
+  } else {
+    // No system prompt, no tools — bare request. Add minimal guidance.
+    parts.push('Answer the latest user message in the conversation context below.');
+  }
+
+  parts.push('');
+  parts.push(JSON.stringify({ messages: normalized }, null, 2));
+  return parts.join('\n');
 }
 
 function stripAnsi(text) {
@@ -232,6 +277,7 @@ function createPromptAttachment(rootDir, prompt) {
 function runQoderCnCli({
   messages,
   model,
+  tools,
   reasoningEffort,
   contextWindow,
   maxOutputTokens,
@@ -251,7 +297,7 @@ function runQoderCnCli({
   const command = process.env.QODERCN_CLI_PATH || 'qoderclicn';
   const modelRoute = resolveModelRoute(model);
   const cliModel = modelRoute.cliModel;
-  const prompt = buildPrompt(messages);
+  const prompt = buildPrompt(messages, tools);
   const timeoutMs = Number(process.env.QODERCN_TIMEOUT_MS || DEFAULT_TIMEOUT_MS);
   const effort = reasoningEffort || modelRoute.reasoningEffort || process.env.QODERCN_REASONING_EFFORT;
   const windowSize = contextWindow || process.env.QODERCN_CONTEXT_WINDOW;

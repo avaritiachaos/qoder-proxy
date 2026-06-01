@@ -1,4 +1,5 @@
 const { AppError } = require('./errors');
+const { generateCallId, normalizeAnthropicTools, buildToolSystemPrompt } = require('./tool-parser');
 
 function normalizeAnthropicText(content) {
   if (content == null) return '';
@@ -12,10 +13,24 @@ function normalizeAnthropicText(content) {
       if (part.type === 'text') return part.text || '';
       if (part.type === 'tool_result') {
         const toolText = normalizeAnthropicText(part.content);
-        return toolText ? `[tool_result ${part.tool_use_id || ''}]\n${toolText}` : '';
+        return toolText ? `<tool_result id="${part.tool_use_id || ''}">\n${toolText}\n</tool_result>` : '';
       }
       if (part.type === 'tool_use') {
-        return `[tool_use ${part.name || ''}]\n${JSON.stringify(part.input || {})}`;
+        return `<tool_use name="${part.name || ''}" id="${part.id || ''}">\n${JSON.stringify(part.input || {})}\n</tool_use>`;
+      }
+      if (part.type === 'image') {
+        const mediaType = part.source?.media_type || 'unknown';
+        return `[image: ${mediaType}]`;
+      }
+      if (part.type === 'thinking') {
+        return part.thinking ? `[thinking]\n${part.thinking}` : '';
+      }
+      if (part.type === 'document') {
+        const label = part.name || part.source?.media_type || 'file';
+        return `[document: ${label}]`;
+      }
+      if (part.type) {
+        return `[unsupported content: ${part.type}]`;
       }
       if (part.text) return part.text;
       return '';
@@ -51,14 +66,14 @@ function anthropicToOpenAiMessages(body) {
   const system = normalizeSystem(body.system);
   if (system) messages.push({ role: 'system', content: system });
 
+  // Convert Anthropic tools to normalized format and inject as system prompt
+  let tools = null;
   if (Array.isArray(body.tools) && body.tools.length) {
-    messages.push({
-      role: 'system',
-      content: [
-        'The client supplied Anthropic tools, but this proxy currently supports text-only responses.',
-        'Do not emit tool_use blocks. Explain limitations or answer directly in text.',
-      ].join(' '),
-    });
+    tools = normalizeAnthropicTools(body.tools);
+    const toolPrompt = buildToolSystemPrompt(tools);
+    if (toolPrompt) {
+      messages.push({ role: 'system', content: toolPrompt });
+    }
   }
 
   for (const message of body.messages) {
@@ -68,10 +83,46 @@ function anthropicToOpenAiMessages(body) {
     });
   }
 
-  return messages;
+  return { messages, tools };
 }
 
-function createAnthropicMessage({ model, content }) {
+function createAnthropicMessage({ model, content, parsedOutput }) {
+  // If the CLI output was parsed as tool calls, return Anthropic tool_use format
+  if (parsedOutput && parsedOutput.type === 'tool_calls') {
+    const contentBlocks = [];
+
+    // Add prefix text if the model also output explanatory text
+    if (parsedOutput.prefixText) {
+      contentBlocks.push({ type: 'text', text: parsedOutput.prefixText });
+    }
+
+    // Add tool_use blocks
+    for (const call of parsedOutput.toolCalls) {
+      contentBlocks.push({
+        type: 'tool_use',
+        id: generateCallId('toolu_'),
+        name: call.name,
+        // Anthropic spec: input is a parsed object, not a JSON string
+        input: call.arguments,
+      });
+    }
+
+    return {
+      id: `msg_${Date.now()}`,
+      type: 'message',
+      role: 'assistant',
+      model,
+      content: contentBlocks,
+      stop_reason: 'tool_use',
+      stop_sequence: null,
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+      },
+    };
+  }
+
+  // Regular text response
   return {
     id: `msg_${Date.now()}`,
     type: 'message',

@@ -134,6 +134,18 @@ Or use the direct alias:
 opencode run --model qoder-cn-local/qwen3.7-max-effort-high "只返回 OK"
 ```
 
+## SillyTavern
+
+Use the Chat Completion custom OpenAI-compatible source:
+
+- API type: `Chat Completion`
+- Chat Completion Source: `Custom (OpenAI-compatible)`
+- Custom Endpoint / Base URL: `http://127.0.0.1:3000/v1`
+- API key: `not-used`
+- Model: choose from the model dropdown, or enter a model ID manually
+
+Do not put `/chat/completions` in the base URL. Do not paste your Qoder CN token into SillyTavern; keep it only in the proxy environment.
+
 ## Curl Checks
 
 ```powershell

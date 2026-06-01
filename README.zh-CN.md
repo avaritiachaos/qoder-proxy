@@ -132,6 +132,18 @@ opencode run --model qoder-cn-local/qwen3.7-max --variant high "只返回 OK"
 opencode run --model qoder-cn-local/qwen3.7-max-effort-high "只返回 OK"
 ```
 
+## SillyTavern / 酒馆配置
+
+在酒馆里使用 Chat Completion 的自定义 OpenAI-compatible 源：
+
+- API 类型：`Chat Completion`
+- Chat Completion Source：`Custom (OpenAI-compatible)`
+- Custom Endpoint / Base URL：`http://127.0.0.1:3000/v1`
+- API Key：`not-used`
+- Model：从模型下拉框选择，或手动填写模型 ID
+
+Base URL 不要写成 `/v1/chat/completions`。不要把 Qoder CN token 填进酒馆；token 只放在代理运行环境或本地 `.env` 里。
+
 ## curl 检查
 
 ```powershell

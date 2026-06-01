@@ -2,6 +2,8 @@
 
 > Local OpenAI-compatible proxy for Qoder CN CLI. For learning and research use only.
 
+[中文说明](README.zh-CN.md)
+
 This project is a clean local proxy intended first for OpenCode. It exposes a small OpenAI-compatible API and calls the official Qoder CN CLI (`qoderclicn`) with `QODERCN_PERSONAL_ACCESS_TOKEN`.
 
 ## Disclaimer

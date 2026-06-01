@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node clean/server.js",
     "dev": "node clean/server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "smoke": "node scripts/smoke.js",
+    "smoke:full": "node scripts/smoke.js --full"
   },
   "keywords": [
     "qoder",

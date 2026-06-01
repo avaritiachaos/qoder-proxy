@@ -70,6 +70,89 @@ test('tool calls are rejected with JSON errors', async () => {
   }
 });
 
+test('anthropic messages endpoint returns text-only message response', async () => {
+  const originalRun = qoderCli.runQoderCnCli;
+  let captured;
+  qoderCli.runQoderCnCli = async (input) => {
+    captured = input;
+    return 'OK';
+  };
+  const { server, baseUrl } = await listen(createApp());
+  try {
+    const response = await fetch(`${baseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'anthropic-version': '2023-06-01',
+        'x-api-key': 'not-used',
+      },
+      body: JSON.stringify({
+        model: 'qwen3.7-max',
+        max_tokens: 32,
+        system: 'Be terse.',
+        tools: [{ name: 'Read', input_schema: { type: 'object' } }],
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.type, 'message');
+    assert.equal(body.role, 'assistant');
+    assert.deepEqual(body.content, [{ type: 'text', text: 'OK' }]);
+    assert.equal(captured.messages.some((message) => /text-only/.test(message.content)), true);
+  } finally {
+    qoderCli.runQoderCnCli = originalRun;
+    server.close();
+  }
+});
+
+test('anthropic messages endpoint streams Anthropic SSE events', async () => {
+  const originalRun = qoderCli.runQoderCnCli;
+  qoderCli.runQoderCnCli = async () => 'OK';
+  const { server, baseUrl } = await listen(createApp());
+  try {
+    const response = await fetch(`${baseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'qwen3.7-max',
+        max_tokens: 32,
+        stream: true,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type'), /text\/event-stream/);
+    const text = await response.text();
+    assert.match(text, /event: message_start/);
+    assert.match(text, /"type":"text_delta","text":"OK"/);
+    assert.match(text, /event: message_stop/);
+  } finally {
+    qoderCli.runQoderCnCli = originalRun;
+    server.close();
+  }
+});
+
+test('anthropic count_tokens returns an approximate input token count', async () => {
+  const { server, baseUrl } = await listen(createApp());
+  try {
+    const response = await fetch(`${baseUrl}/v1/messages/count_tokens`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'qwen3.7-max',
+        messages: [{ role: 'user', content: 'hello world' }],
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(typeof body.input_tokens, 'number');
+    assert.equal(body.input_tokens > 0, true);
+  } finally {
+    server.close();
+  }
+});
+
 test('extracts OpenCode and OpenAI-compatible model options', () => {
   assert.deepEqual(
     extractRequestOptions({

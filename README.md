@@ -65,10 +65,13 @@ start-proxy.cmd
 - `GET /health`
 - `GET /v1/models`
 - `POST /v1/chat/completions`
+- `POST /v1/messages`
+- `POST /v1/messages/count_tokens`
 
 Current limits:
 
 - OpenAI-compatible chat completions only
+- Anthropic Messages compatibility is text-only
 - Streaming responses are SSE-compatible, but the proxy waits for one complete Qoder CLI response before emitting content
 - Tool calls are not supported
 - One Qoder CN CLI subprocess is started per chat request
@@ -145,6 +148,21 @@ Use the Chat Completion custom OpenAI-compatible source:
 - Model: choose from the model dropdown, or enter a model ID manually
 
 Do not put `/chat/completions` in the base URL. Do not paste your Qoder CN token into SillyTavern; keep it only in the proxy environment.
+
+## Claude Code
+
+Claude Code can be pointed at the local Anthropic-compatible endpoint for text-only usage:
+
+```powershell
+$env:ANTHROPIC_BASE_URL = "http://127.0.0.1:3000"
+$env:ANTHROPIC_AUTH_TOKEN = "not-used"
+$env:ANTHROPIC_CUSTOM_MODEL_OPTION = "qwen3.7-max"
+claude --model qwen3.7-max
+```
+
+Do not include `/v1` in `ANTHROPIC_BASE_URL`; Claude Code appends API paths itself.
+
+Current Claude Code limitation: this proxy does not emit Anthropic `tool_use` blocks. Claude Code can receive text responses, but real agentic file editing and command execution require a future tool bridge.
 
 ## Curl Checks
 

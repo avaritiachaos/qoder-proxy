@@ -63,10 +63,13 @@ start-proxy.cmd
 - `GET /health`
 - `GET /v1/models`
 - `POST /v1/chat/completions`
+- `POST /v1/messages`
+- `POST /v1/messages/count_tokens`
 
 当前限制：
 
 - 只实现 OpenAI-compatible chat completions
+- Anthropic Messages 兼容层目前是纯文本模式
 - SSE streaming 格式兼容，但代理会先等待 Qoder CLI 完整返回，再一次性输出内容
 - 暂不支持 tool calls
 - 每个 chat 请求会启动一次 Qoder CN CLI 子进程
@@ -143,6 +146,21 @@ opencode run --model qoder-cn-local/qwen3.7-max-effort-high "只返回 OK"
 - Model：从模型下拉框选择，或手动填写模型 ID
 
 Base URL 不要写成 `/v1/chat/completions`。不要把 Qoder CN token 填进酒馆；token 只放在代理运行环境或本地 `.env` 里。
+
+## Claude Code 使用
+
+Claude Code 可以指向本地 Anthropic-compatible 端点，用于纯文本模式：
+
+```powershell
+$env:ANTHROPIC_BASE_URL = "http://127.0.0.1:3000"
+$env:ANTHROPIC_AUTH_TOKEN = "not-used"
+$env:ANTHROPIC_CUSTOM_MODEL_OPTION = "qwen3.7-max"
+claude --model qwen3.7-max
+```
+
+`ANTHROPIC_BASE_URL` 不要包含 `/v1`，Claude Code 会自己拼接 API 路径。
+
+当前限制：代理不会输出 Anthropic `tool_use` 结构。Claude Code 可以收到文本回复，但真正的 agent 文件编辑和命令执行需要后续单独实现工具桥接。
 
 ## curl 检查
 

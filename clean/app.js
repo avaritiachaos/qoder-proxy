@@ -2,10 +2,17 @@ require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
-const { openAiError, AppError } = require('./errors');
+const { anthropicError, openAiError, AppError } = require('./errors');
 const { log } = require('./logger');
 const qoderCli = require('./qodercn-cli');
 const { DEFAULT_MODEL_ID, MODELS } = require('./models');
+const {
+  anthropicToOpenAiMessages,
+  createAnthropicMessage,
+  estimateAnthropicInputTokens,
+  validateAnthropicMessagesRequest,
+  writeAnthropicMessageStream,
+} = require('./anthropic');
 
 const MODEL_ID = DEFAULT_MODEL_ID;
 
@@ -232,6 +239,58 @@ function createApp() {
         message: error.message,
       });
       if (!res.headersSent && !res.writableEnded) openAiError(res, error);
+    }
+  });
+
+  app.post('/v1/messages', async (req, res) => {
+    const started = Date.now();
+    const controller = new AbortController();
+    req.on('aborted', () => controller.abort());
+
+    try {
+      validateAnthropicMessagesRequest(req.body);
+      const model = req.body.model || MODEL_ID;
+      const requestOptions = extractRequestOptions(req.body);
+      const messages = anthropicToOpenAiMessages(req.body);
+      log('anthropic message request accepted', {
+        model,
+        message_count: req.body.messages.length,
+        stream: Boolean(req.body.stream),
+        tool_count: Array.isArray(req.body.tools) ? req.body.tools.length : 0,
+        reasoning_effort: requestOptions.reasoningEffort,
+      });
+
+      const content = await qoderCli.runQoderCnCli({
+        messages,
+        model,
+        reasoningEffort: requestOptions.reasoningEffort,
+        contextWindow: requestOptions.contextWindow,
+        maxOutputTokens: requestOptions.maxOutputTokens || req.body.max_tokens,
+        signal: controller.signal,
+      });
+
+      if (req.body.stream) {
+        writeAnthropicMessageStream(res, { model, content });
+      } else {
+        res.json(createAnthropicMessage({ model, content }));
+      }
+      log('anthropic message request completed', { duration_ms: Date.now() - started });
+    } catch (error) {
+      log('anthropic message request failed', {
+        code: error.code || 'internal_error',
+        status: error.status || 500,
+        duration_ms: Date.now() - started,
+        message: error.message,
+      });
+      if (!res.headersSent && !res.writableEnded) anthropicError(res, error);
+    }
+  });
+
+  app.post('/v1/messages/count_tokens', (req, res) => {
+    try {
+      res.json({ input_tokens: estimateAnthropicInputTokens(req.body) });
+    } catch (error) {
+      anthropicError(res, error);
     }
   });
 

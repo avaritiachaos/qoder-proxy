@@ -44,6 +44,14 @@ Copy-Item .env.example .env
 QODERCN_PERSONAL_ACCESS_TOKEN=你的 token
 ```
 
+可以在 Qoder CN 的集成页面创建个人访问令牌：
+
+```text
+https://qoder.com.cn/account/integrations
+```
+
+令牌创建后通常只显示一次。请只把它保存在本地 `.env` 或 shell 环境变量里，不要提交到 Git。
+
 不要提交 `.env`。
 
 启动服务：
@@ -161,6 +169,16 @@ claude --model qwen3.7-max
 `ANTHROPIC_BASE_URL` 不要包含 `/v1`，Claude Code 会自己拼接 API 路径。
 
 当前限制：代理不会输出 Anthropic `tool_use` 结构。Claude Code 可以收到文本回复，但真正的 agent 文件编辑和命令执行需要后续单独实现工具桥接。
+
+可选 PowerShell 快捷命令：
+
+```powershell
+function Claude-qwen { ... } # qwen3.7-max
+function Claude-glm  { ... } # glm-5.1
+function Claude-kimi { ... } # kimi-k2.6
+```
+
+PowerShell 命令名不区分大小写，所以 `Claude-qwen`、`claude-qwen`、`CLAUDE-QWEN` 等价。
 
 ## curl 检查
 

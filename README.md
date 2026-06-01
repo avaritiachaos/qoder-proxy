@@ -46,6 +46,14 @@ Edit `.env` locally and set:
 QODERCN_PERSONAL_ACCESS_TOKEN=your-token-here
 ```
 
+You can create a Qoder CN Personal Access Token from:
+
+```text
+https://qoder.com.cn/account/integrations
+```
+
+The token is shown only once after creation. Store it locally in `.env` or in your shell environment, never in Git.
+
 Do not commit `.env`.
 
 Start the proxy:
@@ -163,6 +171,16 @@ claude --model qwen3.7-max
 Do not include `/v1` in `ANTHROPIC_BASE_URL`; Claude Code appends API paths itself.
 
 Current Claude Code limitation: this proxy does not emit Anthropic `tool_use` blocks. Claude Code can receive text responses, but real agentic file editing and command execution require a future tool bridge.
+
+Optional PowerShell shortcuts:
+
+```powershell
+function Claude-qwen { ... } # qwen3.7-max
+function Claude-glm  { ... } # glm-5.1
+function Claude-kimi { ... } # kimi-k2.6
+```
+
+PowerShell command names are case-insensitive, so `Claude-qwen`, `claude-qwen`, and `CLAUDE-QWEN` are equivalent.
 
 ## Curl Checks
 

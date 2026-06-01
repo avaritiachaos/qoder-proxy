@@ -55,7 +55,7 @@ function validateAnthropicMessagesRequest(body) {
     if (!message || typeof message !== 'object') {
       throw new AppError(400, 'invalid_request', 'Each message must be an object.');
     }
-    if (!['user', 'assistant'].includes(message.role)) {
+    if (!['user', 'assistant', 'system'].includes(message.role)) {
       throw new AppError(400, 'invalid_request', `Unsupported message role: ${message.role}`);
     }
   }
@@ -206,4 +206,5 @@ module.exports = {
   normalizeAnthropicText,
   validateAnthropicMessagesRequest,
   writeAnthropicMessageStream,
+  writeAnthropicSse,
 };

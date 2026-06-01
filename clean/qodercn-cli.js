@@ -6,7 +6,7 @@ const { redactString } = require('./redact');
 const { resolveModelRoute } = require('./models');
 const { buildToolSystemPrompt, formatToolResultForPrompt } = require('./tool-parser');
 
-const DEFAULT_TIMEOUT_MS = 120000;
+const DEFAULT_TIMEOUT_MS = 300000;
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
 const ATTACHMENT_INSTRUCTION =
   'Answer the attached OpenAI-compatible chat completion request. Return only the final assistant message content.';
@@ -210,17 +210,23 @@ function buildCliArgs({
   contextWindow,
   maxOutputTokens,
   attachmentPath,
+  appendSystemPrompt,
+  stream,
 }) {
   const args = [
     '--print',
     '--output-format',
-    'json',
+    stream ? 'stream-json' : 'json',
     '--model',
     model,
   ];
 
   if (attachmentPath) {
     args.push('--attachment', attachmentPath);
+  }
+
+  if (appendSystemPrompt) {
+    args.push('--append-system-prompt', appendSystemPrompt);
   }
 
   if (reasoningEffort) {
@@ -294,10 +300,19 @@ function runQoderCnCli({
     );
   }
 
+  // Extract system messages for --append-system-prompt
+  const systemMessages = messages.filter((m) => m.role === 'system');
+  const nonSystemMessages = messages.filter((m) => m.role !== 'system');
+  const appendSystemPrompt = systemMessages
+    .map((m) => normalizeContent(m.content))
+    .filter(Boolean)
+    .join('\n\n');
+
   const command = process.env.QODERCN_CLI_PATH || 'qoderclicn';
   const modelRoute = resolveModelRoute(model);
   const cliModel = modelRoute.cliModel;
-  const prompt = buildPrompt(messages, tools);
+  // Build prompt with non-system messages only (system prompt goes via CLI flag)
+  const prompt = buildPrompt(nonSystemMessages, tools);
   const timeoutMs = Number(process.env.QODERCN_TIMEOUT_MS || DEFAULT_TIMEOUT_MS);
   const effort = reasoningEffort || modelRoute.reasoningEffort || process.env.QODERCN_REASONING_EFFORT;
   const windowSize = contextWindow || process.env.QODERCN_CONTEXT_WINDOW;
@@ -310,6 +325,7 @@ function runQoderCnCli({
     contextWindow: windowSize,
     maxOutputTokens: outputTokens,
     attachmentPath,
+    appendSystemPrompt: appendSystemPrompt || undefined,
   });
   const spawnSpec = buildSpawnCommand(command, args);
 
@@ -404,6 +420,207 @@ function runQoderCnCli({
   });
 }
 
+/**
+ * Extract a text delta from a single stream-json line.
+ *
+ * The CLI's `--output-format stream-json` emits one JSON object per line with
+ * various `type` values.  Only `assistant`-type messages carry incremental
+ * text that should be forwarded to the client.
+ *
+ * Returns a non-empty string when text is available, or `null` to skip.
+ */
+function extractStreamDelta(record) {
+  if (!record || typeof record !== 'object') return null;
+
+  if (record.type === 'assistant') {
+    if (record.message && Array.isArray(record.message.content)) {
+      const texts = record.message.content
+        .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+        .map((b) => b.text);
+      if (texts.length) return texts.join('');
+    }
+    if (typeof record.delta === 'string') return record.delta;
+    if (typeof record.text === 'string') return record.text;
+  }
+
+  return null;
+}
+
+function runQoderCnCliStream({
+  messages,
+  model,
+  tools,
+  reasoningEffort,
+  contextWindow,
+  maxOutputTokens,
+  signal,
+  rootDir = process.cwd(),
+  onDelta,
+}) {
+  const token = process.env.QODERCN_PERSONAL_ACCESS_TOKEN;
+  if (!token) {
+    throw new AppError(
+      401,
+      'qodercn_token_missing',
+      'QODERCN_PERSONAL_ACCESS_TOKEN is not configured.',
+      'authentication_error'
+    );
+  }
+
+  const systemMessages = messages.filter((m) => m.role === 'system');
+  const nonSystemMessages = messages.filter((m) => m.role !== 'system');
+  const appendSystemPrompt = systemMessages
+    .map((m) => normalizeContent(m.content))
+    .filter(Boolean)
+    .join('\n\n');
+
+  const command = process.env.QODERCN_CLI_PATH || 'qoderclicn';
+  const modelRoute = resolveModelRoute(model);
+  const cliModel = modelRoute.cliModel;
+  const prompt = buildPrompt(nonSystemMessages, tools);
+  const timeoutMs = Number(process.env.QODERCN_TIMEOUT_MS || DEFAULT_TIMEOUT_MS);
+  const effort = reasoningEffort || modelRoute.reasoningEffort || process.env.QODERCN_REASONING_EFFORT;
+  const windowSize = contextWindow || process.env.QODERCN_CONTEXT_WINDOW;
+  const outputTokens = maxOutputTokens || process.env.QODERCN_MAX_OUTPUT_TOKENS;
+  const attachmentPath = createPromptAttachment(rootDir, prompt);
+  const args = buildCliArgs({
+    prompt,
+    model: cliModel,
+    reasoningEffort: effort,
+    contextWindow: windowSize,
+    maxOutputTokens: outputTokens,
+    attachmentPath,
+    appendSystemPrompt: appendSystemPrompt || undefined,
+    stream: true,
+  });
+  const spawnSpec = buildSpawnCommand(command, args);
+
+  return new Promise((resolve, reject) => {
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    const stderrChunks = [];
+    let settled = false;
+    let timedOut = false;
+    let lineBuffer = '';
+    const fullTextParts = [];
+
+    const child = spawn(spawnSpec.command, spawnSpec.args, {
+      cwd: rootDir,
+      env: buildChildEnv(rootDir, token),
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener?.('abort', onAbort);
+      fs.rmSync(attachmentPath, { force: true });
+      fn(value);
+    };
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, timeoutMs);
+
+    const onAbort = () => {
+      child.kill();
+      finish(
+        reject,
+        new AppError(499, 'request_cancelled', 'Request was cancelled by the client.')
+      );
+    };
+
+    if (signal?.aborted) return onAbort();
+    signal?.addEventListener?.('abort', onAbort, { once: true });
+
+    child.on('error', (error) => {
+      const code = error.code === 'ENOENT' ? 'qodercn_cli_not_found' : 'qodercn_cli_error';
+      const message =
+        error.code === 'ENOENT'
+          ? 'qoderclicn is not installed or not on PATH.'
+          : 'Failed to start Qoder CN CLI.';
+      finish(reject, new AppError(502, code, message));
+    });
+
+    child.stdout.on('data', (chunk) => {
+      try {
+        const nextBytes = stdoutBytes + chunk.length;
+        if (nextBytes > MAX_OUTPUT_BYTES) {
+          throw new AppError(502, 'upstream_output_too_large', 'Qoder CN CLI output exceeded the limit.');
+        }
+        stdoutBytes = nextBytes;
+      } catch (error) {
+        child.kill();
+        finish(reject, error);
+        return;
+      }
+
+      lineBuffer += chunk.toString('utf8');
+      const lines = lineBuffer.split(/\r?\n/);
+      lineBuffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+
+        try {
+          const record = JSON.parse(trimmed);
+          const delta = extractStreamDelta(record);
+          if (delta) {
+            fullTextParts.push(delta);
+            onDelta(delta);
+          }
+        } catch (_) {
+          // Non-JSON line — skip silently (status messages, ANSI, etc.)
+        }
+      }
+    });
+
+    child.stderr.on('data', (chunk) => {
+      try {
+        stderrBytes = appendChunk(stderrChunks, chunk, stderrBytes);
+      } catch (error) {
+        child.kill();
+        finish(reject, error);
+      }
+    });
+
+    child.on('close', (code) => {
+      // Flush remaining buffer
+      if (lineBuffer.trim()) {
+        try {
+          const record = JSON.parse(lineBuffer.trim());
+          const delta = extractStreamDelta(record);
+          if (delta) {
+            fullTextParts.push(delta);
+            onDelta(delta);
+          }
+        } catch (_) {
+          // Ignore
+        }
+      }
+
+      if (settled) return;
+      if (timedOut) {
+        finish(reject, new AppError(504, 'upstream_timeout', 'Qoder CN CLI request timed out.'));
+        return;
+      }
+      if (code !== 0) {
+        const stderr = Buffer.concat(stderrChunks).toString('utf8');
+        const detail = redactString(stderr).trim();
+        const suffix = detail ? ` ${detail.slice(0, 240)}` : '';
+        finish(reject, new AppError(502, 'upstream_error', `Qoder CN CLI failed.${suffix}`));
+        return;
+      }
+
+      finish(resolve, fullTextParts.join(''));
+    });
+  });
+}
+
 module.exports = {
   ATTACHMENT_INSTRUCTION,
   buildCliArgs,
@@ -411,6 +628,8 @@ module.exports = {
   buildSpawnCommand,
   createPromptAttachment,
   extractAssistantContent,
+  extractStreamDelta,
   normalizeMessages,
   runQoderCnCli,
+  runQoderCnCliStream,
 };

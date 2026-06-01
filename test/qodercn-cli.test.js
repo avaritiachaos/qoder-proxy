@@ -9,6 +9,7 @@ const {
   buildSpawnCommand,
   createPromptAttachment,
   extractAssistantContent,
+  extractStreamDelta,
 } = require('../clean/qodercn-cli');
 const { resolveModelRoute } = require('../clean/models');
 
@@ -141,4 +142,66 @@ test('uses qoderclicn JS bundle directly when npm cmd shim is available', () => 
     Object.defineProperty(process, 'platform', originalPlatform);
     fs.rmSync(temp, { recursive: true, force: true });
   }
+});
+
+test('builds stream-json output format when stream is requested', () => {
+  const args = buildCliArgs({ prompt: 'hello', model: 'auto', stream: true });
+  assert.deepEqual(args.slice(0, 5), ['--print', '--output-format', 'stream-json', '--model', 'auto']);
+});
+
+test('defaults to non-streaming json format when stream is not set', () => {
+  const args = buildCliArgs({ prompt: 'hello', model: 'auto' });
+  assert.deepEqual(args.slice(0, 5), ['--print', '--output-format', 'json', '--model', 'auto']);
+});
+
+test('extractStreamDelta extracts text from assistant message with content array', () => {
+  const record = {
+    type: 'assistant',
+    message: { content: [{ type: 'text', text: 'Hello world' }] },
+  };
+  assert.equal(extractStreamDelta(record), 'Hello world');
+});
+
+test('extractStreamDelta extracts text from assistant message with delta field', () => {
+  const record = { type: 'assistant', delta: 'partial text' };
+  assert.equal(extractStreamDelta(record), 'partial text');
+});
+
+test('extractStreamDelta extracts text from assistant message with text field', () => {
+  const record = { type: 'assistant', text: 'some text' };
+  assert.equal(extractStreamDelta(record), 'some text');
+});
+
+test('extractStreamDelta returns null for non-assistant types', () => {
+  assert.equal(extractStreamDelta({ type: 'system' }), null);
+  assert.equal(extractStreamDelta({ type: 'result', result: 'done' }), null);
+  assert.equal(extractStreamDelta({ type: 'user', content: 'hi' }), null);
+});
+
+test('extractStreamDelta returns null for tool_use content blocks', () => {
+  const record = {
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', name: 'Bash', input: {} }] },
+  };
+  assert.equal(extractStreamDelta(record), null);
+});
+
+test('extractStreamDelta returns null for null or non-object input', () => {
+  assert.equal(extractStreamDelta(null), null);
+  assert.equal(extractStreamDelta(undefined), null);
+  assert.equal(extractStreamDelta('string'), null);
+});
+
+test('extractStreamDelta joins multiple text blocks', () => {
+  const record = {
+    type: 'assistant',
+    message: {
+      content: [
+        { type: 'text', text: 'first ' },
+        { type: 'tool_use', name: 'X', input: {} },
+        { type: 'text', text: 'second' },
+      ],
+    },
+  };
+  assert.equal(extractStreamDelta(record), 'first second');
 });

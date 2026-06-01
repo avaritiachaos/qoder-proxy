@@ -33,7 +33,11 @@ test('health and models endpoints are OpenAI-compatible enough for discovery', a
 
 test('streaming returns OpenAI-compatible SSE chunks', async () => {
   const originalRun = qoderCli.runQoderCnCli;
-  qoderCli.runQoderCnCli = async () => 'OK';
+  const originalStream = qoderCli.runQoderCnCliStream;
+  qoderCli.runQoderCnCliStream = async ({ onDelta }) => {
+    onDelta('OK');
+    return 'OK';
+  };
   const { server, baseUrl } = await listen(createApp());
   try {
     const streaming = await fetch(`${baseUrl}/v1/chat/completions`, {
@@ -49,6 +53,37 @@ test('streaming returns OpenAI-compatible SSE chunks', async () => {
     assert.match(text, /data: \[DONE\]/);
   } finally {
     qoderCli.runQoderCnCli = originalRun;
+    qoderCli.runQoderCnCliStream = originalStream;
+    server.close();
+  }
+});
+
+test('true streaming forwards multiple deltas in real time', async () => {
+  const originalStream = qoderCli.runQoderCnCliStream;
+  qoderCli.runQoderCnCliStream = async ({ onDelta }) => {
+    onDelta('Hello ');
+    onDelta('world');
+    onDelta('!');
+    return 'Hello world!';
+  };
+  const { server, baseUrl } = await listen(createApp());
+  try {
+    const streaming = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ stream: true, messages: [{ role: 'user', content: 'hi' }] }),
+    });
+    assert.equal(streaming.status, 200);
+    const text = await streaming.text();
+    // Each delta should appear as a separate SSE chunk
+    const deltaMatches = text.match(/"content":"[^"]+"/g) || [];
+    assert.equal(deltaMatches.length, 3);
+    assert.match(deltaMatches[0], /"content":"Hello "/);
+    assert.match(deltaMatches[1], /"content":"world"/);
+    assert.match(deltaMatches[2], /"content":"!"/);
+    assert.match(text, /data: \[DONE\]/);
+  } finally {
+    qoderCli.runQoderCnCliStream = originalStream;
     server.close();
   }
 });
@@ -121,7 +156,11 @@ test('anthropic messages endpoint with tools injects tool definitions', async ()
 
 test('anthropic messages endpoint streams Anthropic SSE events', async () => {
   const originalRun = qoderCli.runQoderCnCli;
-  qoderCli.runQoderCnCli = async () => 'OK';
+  const originalStream = qoderCli.runQoderCnCliStream;
+  qoderCli.runQoderCnCliStream = async ({ onDelta }) => {
+    onDelta('OK');
+    return 'OK';
+  };
   const { server, baseUrl } = await listen(createApp());
   try {
     const response = await fetch(`${baseUrl}/v1/messages`, {
@@ -142,6 +181,44 @@ test('anthropic messages endpoint streams Anthropic SSE events', async () => {
     assert.match(text, /event: message_stop/);
   } finally {
     qoderCli.runQoderCnCli = originalRun;
+    qoderCli.runQoderCnCliStream = originalStream;
+    server.close();
+  }
+});
+
+test('anthropic true streaming forwards multiple deltas', async () => {
+  const originalStream = qoderCli.runQoderCnCliStream;
+  qoderCli.runQoderCnCliStream = async ({ onDelta }) => {
+    onDelta('Hello ');
+    onDelta('world');
+    return 'Hello world';
+  };
+  const { server, baseUrl } = await listen(createApp());
+  try {
+    const response = await fetch(`${baseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'qwen3.7-max',
+        max_tokens: 32,
+        stream: true,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    });
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    assert.match(text, /event: message_start/);
+    assert.match(text, /event: content_block_start/);
+    // Each delta should appear as a separate content_block_delta
+    const deltaMatches = text.match(/event: content_block_delta/g) || [];
+    assert.equal(deltaMatches.length, 2);
+    assert.match(text, /"text":"Hello "/);
+    assert.match(text, /"text":"world"/);
+    assert.match(text, /event: content_block_stop/);
+    assert.match(text, /event: message_delta/);
+    assert.match(text, /event: message_stop/);
+  } finally {
+    qoderCli.runQoderCnCliStream = originalStream;
     server.close();
   }
 });

@@ -12,6 +12,7 @@ const {
   estimateAnthropicInputTokens,
   validateAnthropicMessagesRequest,
   writeAnthropicMessageStream,
+  writeAnthropicSse,
 } = require('./anthropic');
 const {
   parseToolCallOutput,
@@ -257,6 +258,73 @@ function createApp() {
         reasoning_effort: requestOptions.reasoningEffort,
       });
 
+      // True streaming: stream-json mode, real-time SSE forwarding
+      if (req.body.stream && !normalizedTools) {
+        const id = `chatcmpl-${Date.now()}`;
+        const created = Math.floor(Date.now() / 1000);
+
+        res.status(200);
+        res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache, no-transform');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders?.();
+
+        // Send role chunk first
+        writeSse(res, {
+          id,
+          object: 'chat.completion.chunk',
+          created,
+          model,
+          choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
+        });
+
+        try {
+          await qoderCli.runQoderCnCliStream({
+            messages: req.body.messages,
+            model,
+            tools: null,
+            reasoningEffort: requestOptions.reasoningEffort,
+            contextWindow: requestOptions.contextWindow,
+            maxOutputTokens: requestOptions.maxOutputTokens,
+            signal: controller.signal,
+            onDelta: (delta) => {
+              writeSse(res, {
+                id,
+                object: 'chat.completion.chunk',
+                created,
+                model,
+                choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
+              });
+            },
+          });
+        } catch (streamError) {
+          // If headers are already sent, we can only log and end the stream
+          if (!res.writableEnded) {
+            try { res.end(); } catch (_) { /* ignore */ }
+          }
+          log('chat stream failed', {
+            code: streamError.code || 'internal_error',
+            status: streamError.status || 500,
+            duration_ms: Date.now() - started,
+            message: streamError.message,
+          });
+          return;
+        }
+
+        writeSse(res, {
+          id,
+          object: 'chat.completion.chunk',
+          created,
+          model,
+          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        });
+        res.write('data: [DONE]\n\n');
+        res.end();
+        log('chat stream completed', { duration_ms: Date.now() - started });
+        return;
+      }
+
+      // Non-streaming path (or tool calls with stream=true → downgraded)
       const content = await qoderCli.runQoderCnCli({
         messages: req.body.messages,
         model,
@@ -313,6 +381,81 @@ function createApp() {
         reasoning_effort: requestOptions.reasoningEffort,
       });
 
+      // True streaming: stream-json mode, real-time SSE forwarding
+      if (req.body.stream && !tools) {
+        const msgId = `msg_${Date.now()}`;
+
+        res.status(200);
+        res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache, no-transform');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders?.();
+
+        writeAnthropicSse(res, 'message_start', {
+          type: 'message_start',
+          message: {
+            id: msgId,
+            type: 'message',
+            role: 'assistant',
+            model,
+            content: [],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: { input_tokens: 0, output_tokens: 0 },
+          },
+        });
+        writeAnthropicSse(res, 'content_block_start', {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        });
+
+        try {
+          await qoderCli.runQoderCnCliStream({
+            messages,
+            model,
+            tools: null,
+            reasoningEffort: requestOptions.reasoningEffort,
+            contextWindow: requestOptions.contextWindow,
+            maxOutputTokens: requestOptions.maxOutputTokens || req.body.max_tokens,
+            signal: controller.signal,
+            onDelta: (delta) => {
+              writeAnthropicSse(res, 'content_block_delta', {
+                type: 'content_block_delta',
+                index: 0,
+                delta: { type: 'text_delta', text: delta },
+              });
+            },
+          });
+        } catch (streamError) {
+          if (!res.writableEnded) {
+            try { res.end(); } catch (_) { /* ignore */ }
+          }
+          log('anthropic stream failed', {
+            code: streamError.code || 'internal_error',
+            status: streamError.status || 500,
+            duration_ms: Date.now() - started,
+            message: streamError.message,
+          });
+          return;
+        }
+
+        writeAnthropicSse(res, 'content_block_stop', {
+          type: 'content_block_stop',
+          index: 0,
+        });
+        writeAnthropicSse(res, 'message_delta', {
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn', stop_sequence: null },
+          usage: { output_tokens: 0 },
+        });
+        writeAnthropicSse(res, 'message_stop', { type: 'message_stop' });
+        res.end();
+        log('anthropic stream completed', { duration_ms: Date.now() - started });
+        return;
+      }
+
+      // Non-streaming path (or tool calls with stream=true → downgraded)
       const content = await qoderCli.runQoderCnCli({
         messages,
         model,

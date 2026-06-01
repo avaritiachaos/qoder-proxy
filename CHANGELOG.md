@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-06-01
+
 ### Added
 
+- **True streaming**: When `stream: true` and no tools are present, the proxy now uses `qoderclicn --output-format stream-json` for real-time incremental text streaming. Text deltas are forwarded as SSE events immediately as they arrive from the CLI, instead of buffering the entire response.
 - OpenAI Tool Calls support: `/v1/chat/completions` now accepts `tools` parameter and `role: 'tool'` messages. When the model outputs a tool call, the response contains `tool_calls` with `finish_reason: 'tool_calls'`. If parsing fails, the response falls back to plain text.
 - Anthropic Tool Use support: `/v1/messages` now accepts `tools` with `input_schema` and `tool_result` content blocks. When the model outputs a tool call, the response contains `tool_use` content blocks with `stop_reason: 'tool_use'`. Mixed text + tool_use blocks are supported.
 - Shared `tool-parser.js` module: centralized tool prompt injection, output parsing, ID generation, and result formatting. Both OpenAI and Anthropic endpoints reuse this module.
@@ -20,14 +23,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tool call IDs use `call_` prefix for OpenAI and `toolu_` prefix for Anthropic.
 - Tool results in multi-turn conversations are formatted with `<tool_result id="...">` tags preserving call/use ID linkage.
 - Previous assistant `tool_calls` in message history are formatted as `[assistant called tool: ...]` for prompt context continuity.
+- `--append-system-prompt` support: system messages from the client are extracted and passed to the CLI via `--append-system-prompt` flag.
+- `files` field in `package.json` for safer npm publishing (whitelist approach).
 
 ### Changed
 
+- Default timeout increased from 120s to 300s (5 minutes) for tool-heavy requests.
 - `validateChatRequest` no longer rejects `role: 'tool'` messages or `tool_calls` in message history.
+- `validateAnthropicMessagesRequest` now accepts `system` role in messages array (Claude Code compatibility).
 - `anthropicToOpenAiMessages` no longer injects a "text-only" warning when tools are provided; instead it injects the actual tool definitions as a system prompt.
 - `normalizeAnthropicText` now uses `<tool_result id="...">` and `<tool_use name="..." id="...">` tags instead of `[tool_result]` / `[tool_use]` bracket format.
-- Streaming responses for tool call outputs are downgraded to non-streaming (single JSON response), since tool calls cannot be incrementally streamed.
-- This changelog.
+- Streaming responses for tool call outputs are downgraded to non-streaming (single JSON response), since tool calls cannot be incrementally streaming.
+- Tool call requests with `stream: true` use the non-streaming CLI path and downgrade to compatibility-shaped SSE.
 
 ## [1.0.0] - 2025-06-01
 

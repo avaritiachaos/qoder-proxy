@@ -1,8 +1,21 @@
 {
   "name": "qoder-cn-proxy",
-  "version": "1.0.0",
-  "description": "Local OpenAI-compatible proxy for Qoder CN CLI, for learning only",
+  "version": "1.1.0",
+  "description": "Local OpenAI/Anthropic-compatible proxy for Qoder CN CLI",
   "main": "clean/server.js",
+  "files": [
+    "clean/",
+    "scripts/",
+    "test/",
+    "opencode.json",
+    "start-proxy.cmd",
+    "CHANGELOG.md",
+    "README.md",
+    "README.zh-CN.md",
+    "SECURITY.md",
+    "LICENSE",
+    ".env.example"
+  ],
   "scripts": {
     "start": "node clean/server.js",
     "dev": "node clean/server.js",
@@ -13,11 +26,21 @@
   "keywords": [
     "qoder",
     "qoder-cn",
+    "qodercn",
     "opencode",
+    "claude-code",
+    "sillytavern",
     "openai-compatible",
-    "proxy"
+    "anthropic-compatible",
+    "proxy",
+    "streaming",
+    "tool-calls"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/avaritiachaos/qoder-cn-proxy"
+  },
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",

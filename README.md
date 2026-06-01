@@ -1,93 +1,95 @@
 # Qoder CN Proxy
 
-Wraps the Qoder CN CLI into a local OpenAI / Anthropic-compatible API so that other tools (OpenCode, SillyTavern, Claude Code, CodeShion, etc.) can talk to it directly.
+将 Qoder CN CLI (`qoderclicn`) 封装为本地 OpenAI / Anthropic 兼容 API，使 OpenCode、SillyTavern、Claude Code 等工具能够直接对接 Qoder CN 的模型能力。
 
-For learning and local experimentation only. Not affiliated with Qoder or OpenCode.
+本项目仅供学习与本地实验使用，与 Qoder 官方无关。
 
-[中文说明](README.zh-CN.md)
+[English](README.en.md)
 
-## What it does
+## 工作原理
 
-The Qoder CN CLI (`qoderclicn`) only accepts text input and returns text output. But most tools expect an API endpoint with OpenAI or Anthropic format. This proxy sits in the middle: tools send API-format requests, the proxy translates them into CLI calls, then translates the CLI output back into API format.
+`qoderclicn` 是一个命令行工具，只接受文本输入、返回文本输出。而大多数开发工具期望对接的是 OpenAI 或 Anthropic 格式的 HTTP API。本代理充当中间层：接收 API 格式的请求，将其转换为 CLI 调用，再将 CLI 输出转换回 API 格式返回。
 
-Two formats are supported:
+支持两种 API 格式：
 
-- OpenAI format (`/v1/chat/completions`) — for OpenCode, SillyTavern, CodeShion
-- Anthropic format (`/v1/messages`) — for Claude Code
+- **OpenAI 格式**（`/v1/chat/completions`）—— 适用于 OpenCode、SillyTavern 等支持 OpenAI 兼容接口的工具
+- **Anthropic 格式**（`/v1/messages`）—— 适用于 Claude Code
 
-Both now support tool calls (tool_calls / tool_use), so Agent mode works.
+两种格式均已支持工具调用（`tool_calls` / `tool_use`），可运行 Agent 模式。
 
-## How tool calls work
+## 工具调用实现方式
 
-Since `qoderclicn` only understands text, the proxy injects tool definitions into the prompt as format instructions, then parses the model's text output to extract JSON tool calls. This is fundamentally different from calling the official DeepSeek or OpenAI API — those have a dedicated `tools` parameter channel, and models natively understand tool calls without any extra prompt. The proxy can only simulate tool calls through prompt injection, so reliability depends on whether the underlying model consistently outputs parseable JSON.
+由于 `qoderclicn` 本身只处理文本，不具备原生的工具调用通道，代理采用 Prompt 注入 + 输出解析的方式实现：将工具定义注入到 Prompt 中作为格式指令，再从模型的文本输出中提取 JSON 并解析为工具调用。
 
-## Will the injected prompt pollute character personas
+这与直接调用 OpenAI 或 DeepSeek 等官方 API 有本质区别 —— 官方 API 提供独立的 `tools` 参数通道，模型原生理解工具调用协议。代理只能通过 Prompt 模拟，因此可靠性取决于底层模型是否能稳定输出符合格式的 JSON。
 
-No. The proxy uses three paths, injecting only what's necessary:
+## Prompt 注入策略（反污染）
 
-- SillyTavern / character roleplay (has system prompt, no tools): zero injection. The character persona is entirely controlled by the client's system prompt. The proxy adds nothing.
-- Simple chat (no system prompt, no tools): a single sentence — "Answer the latest user message" — not a role definition.
-- Agent mode (tools present): only `[Tool Protocol]` format instructions — tool list and output format, no "you are a..." role statements.
+代理采用三条路径，仅在必要时注入最少内容：
 
-SillyTavern will never see any injected prompt because it doesn't send tools parameters.
+- **客户端自带 system prompt（无工具）**：零注入。模型行为完全由客户端的 system prompt 控制，代理不添加任何内容。
+- **简单对话（无 system prompt，无工具）**：仅注入一句元指令 —— "回答对话中最新的用户消息"，不构成角色定义。
+- **Agent 模式（有工具参数）**：仅注入 `[Tool Protocol]` 格式指令，包含工具列表和输出格式规范，不含任何角色定义语句。
 
-## Security
+## 安全边界
 
-- Auth comes only from `QODERCN_PERSONAL_ACCESS_TOKEN` env var, never reads desktop client login state
-- Only listens on `127.0.0.1`, never exposed to the network
-- Logs redact tokens, cookies, Authorization headers
-- Does not scan `%APPDATA%` or `~/.qoderwork`
-- Never commit `.env`, tokens, or logs
+- 认证仅使用环境变量 `QODERCN_PERSONAL_ACCESS_TOKEN`，不读取桌面客户端的登录状态
+- 仅监听 `127.0.0.1`，不暴露到网络
+- 日志自动脱敏 token、cookie、Authorization 头等敏感信息
+- 不扫描 `%APPDATA%`、`%LOCALAPPDATA%` 或 `~/.qoderwork`
+- `.env`、token、日志均不纳入版本控制
 
-## Setup
+## 安装
 
-Requires Node.js 18+ and Qoder CN CLI:
+需要 Node.js 18+ 和 Qoder CN CLI：
 
 ```bash
 npm install -g @qodercn-ai/qoderclicn
 qoderclicn --version
 ```
 
+安装依赖并创建配置：
+
 ```powershell
 npm install
 Copy-Item .env.example .env
 ```
 
-Edit `.env` and set your token:
+编辑 `.env`，填入令牌：
 
 ```
 QODERCN_PERSONAL_ACCESS_TOKEN=your-token-here
 ```
 
-Get a token at: https://qoder.com.cn/account/integrations (shown once after creation, save it locally)
+令牌创建地址：https://qoder.com.cn/account/integrations （创建后仅显示一次，请妥善保存）
 
-Do not commit `.env`.
+请勿将 `.env` 提交到 Git。
 
-Start:
+启动：
 
 ```powershell
 npm start
 ```
 
-Or on Windows, double-click `start-proxy.cmd`.
+Windows 也可以双击 `start-proxy.cmd`。
 
-## Models
+## 支持的模型
 
-`qoder-cn`, `auto`, `qwen3.7-max`, `glm-5.1`, `kimi-k2.6`, `qwen3.6-plus`, `qwen3.6-flash`, `deepseek-v4-pro`, `deepseek-v4-flash`
+`qoder-cn`、`auto`、`qwen3.7-max`、`glm-5.1`、`kimi-k2.6`、`qwen3.6-plus`、`qwen3.6-flash`、`deepseek-v4-pro`、`deepseek-v4-flash`
 
-Qwen3.7-Max effort aliases: `qwen3.7-max-effort-low`, `-medium`, `-high`, `-max`
+Qwen3.7-Max 推理强度别名：`qwen3.7-max-effort-low`、`-medium`、`-high`、`-max`
 
-## Connecting tools
+## 客户端接入指南
 
 ### OpenCode
 
-The repo includes an `opencode.json`. Start OpenCode from this project directory:
+仓库自带 `opencode.json` 配置文件，从项目目录启动 OpenCode 即可：
 
 ```powershell
 opencode run --model qoder-cn-local/qwen3.7-max --variant high "reply OK"
 ```
 
-Or use the effort alias directly:
+也可直接使用推理强度别名：
 
 ```powershell
 opencode run --model qoder-cn-local/qwen3.7-max-effort-high "reply OK"
@@ -95,15 +97,15 @@ opencode run --model qoder-cn-local/qwen3.7-max-effort-high "reply OK"
 
 ### SillyTavern
 
-Use Chat Completion with a custom OpenAI-compatible source:
+使用 Chat Completion 的自定义 OpenAI 兼容源：
 
-- API type: Chat Completion
-- Source: Custom (OpenAI-compatible)
-- Base URL: `http://127.0.0.1:3000/v1`
-- API Key: `not-used`
-- Model: select from dropdown or type manually
+- API 类型：Chat Completion
+- Source：Custom (OpenAI-compatible)
+- Base URL：`http://127.0.0.1:3000/v1`
+- API Key：任意值（如 `not-used`）
+- Model：从下拉列表选择或手动输入模型 ID
 
-Don't add `/chat/completions` to the Base URL. Don't put your Qoder CN token in SillyTavern — keep it only in the proxy's `.env`.
+注意：Base URL 不要追加 `/chat/completions`；不要将 Qoder CN 令牌填入 SillyTavern —— 令牌只需配置在代理的 `.env` 中。
 
 ### Claude Code
 
@@ -113,27 +115,25 @@ $env:ANTHROPIC_AUTH_TOKEN = "not-used"
 claude --model qwen3.7-max
 ```
 
-Don't add `/v1` to `ANTHROPIC_BASE_URL` — Claude Code adds the API path itself.
+`ANTHROPIC_BASE_URL` 不要追加 `/v1`，Claude Code 会自动拼接 API 路径。
 
-Now supports `tool_use` and `tool_result`, so Claude Code can do real Agent-mode file editing and command execution (assuming the underlying model reliably outputs tool call JSON).
+已支持 `tool_use` 和 `tool_result`，Claude Code 可以在 Agent 模式下执行文件编辑和命令操作（可靠性取决于底层模型的工具调用 JSON 输出能力）。
 
-Optional PowerShell shortcuts: `Claude-qwen` (qwen3.7-max), `Claude-glm` (glm-5.1), `Claude-kimi` (kimi-k2.6). Case-insensitive.
+可选：配置 PowerShell 快捷命令 —— `Claude-qwen`（qwen3.7-max）、`Claude-glm`（glm-5.1）、`Claude-kimi`（kimi-k2.6），大小写不敏感。
 
-### CodeShion (紫苑)
+## API 端点
 
-Connect via OpenAI format `/v1/chat/completions`. When tools are provided, it runs in Agent mode with tool calls. Without tools, it runs in plain chat mode with zero prompt injection — character personas stay clean.
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/health` | 健康检查 |
+| GET | `/v1/models` | 模型列表 |
+| POST | `/v1/chat/completions` | OpenAI 格式对话（支持 tools） |
+| POST | `/v1/messages` | Anthropic 格式对话（支持 tool_use） |
+| POST | `/v1/messages/count_tokens` | Token 估算 |
 
-## Endpoints
+## 推理参数
 
-- `GET /health` — health check
-- `GET /v1/models` — model list
-- `POST /v1/chat/completions` — OpenAI format (with tools support)
-- `POST /v1/messages` — Anthropic format (with tool_use support)
-- `POST /v1/messages/count_tokens` — token estimate
-
-## Reasoning options
-
-Global defaults via environment:
+通过环境变量设置全局默认值：
 
 ```powershell
 $env:QODERCN_REASONING_EFFORT = "high"
@@ -141,17 +141,22 @@ $env:QODERCN_CONTEXT_WINDOW = "200000"
 $env:QODERCN_MAX_OUTPUT_TOKENS = "4096"
 ```
 
-Or per-request: `reasoning_effort`, `context_window`, `max_tokens`.
+也可在每次请求中通过 `reasoning_effort`、`context_window`、`max_tokens` 参数单独指定。
 
-## Current limits
+## 流式输出
 
-- Tool calls are implemented through prompt injection + text parsing, not native model capability. Reliability varies by model.
-- Tool call responses are always non-streaming (complete JSON response).
-- Text streaming is "fake streaming" — the proxy waits for CLI to finish, then emits a few SSE chunks.
-- Each request spawns a new qoderclicn subprocess.
-- If the model outputs invalid JSON or ignores tool format, the response falls back to plain text.
+当客户端请求 `stream: true` 且不包含工具参数时，代理使用 `qoderclicn --output-format stream-json` 进行实时增量流式输出，文本内容会在生成时即时以 SSE 事件转发给客户端。
 
-## Quick checks
+当请求包含工具参数时，流式请求会自动降级为非流式响应（工具调用需要完整 JSON 输出才能解析）。
+
+## 当前限制
+
+- 工具调用通过 Prompt 注入 + 文本解析实现，非模型原生能力，可靠性因模型而异
+- 工具调用的响应不走流式，始终为完整 JSON 返回
+- 每次请求启动一个新的 `qoderclicn` 子进程
+- 若模型输出非法 JSON 或拒绝使用工具格式，响应自动降级为纯文本
+
+## 快速验证
 
 ```powershell
 curl.exe http://127.0.0.1:3000/health
@@ -161,12 +166,12 @@ curl.exe http://127.0.0.1:3000/v1/chat/completions `
   -d "{\"model\":\"qoder-cn\",\"messages\":[{\"role\":\"user\",\"content\":\"reply OK\"}]}"
 ```
 
-## Tests
+## 测试
 
 ```powershell
 npm test
 ```
 
-## License
+## 许可证
 
-MIT. See [LICENSE](LICENSE).
+MIT。详见 [LICENSE](LICENSE)。

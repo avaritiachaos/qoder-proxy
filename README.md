@@ -177,3 +177,7 @@ npm test
 ## 许可证
 
 MIT。详见 [LICENSE](LICENSE)。
+
+## 社区
+
+本项目在 [LINUX DO](https://linux.do) 社区进行开源推广与讨论，欢迎前往交流反馈。

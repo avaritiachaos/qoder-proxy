@@ -197,3 +197,7 @@ npm test
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Community
+
+This project may be discussed on the [LINUX DO](https://linux.do) community. Please follow this README's disclaimer, safety recommendations, and abuse policy when discussing or sharing it.

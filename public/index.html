@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Qoder CN Proxy - Web Console</title>
+  <base href="/ui/">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="dark">
+  <!-- Top Bar -->
+  <header class="glass topbar">
+    <div class="brand">
+      <span class="brand-icon">◈</span>
+      <span class="brand-text">Qoder CN Proxy</span>
+      <span class="brand-badge">Web Console</span>
+    </div>
+    <div class="top-actions">
+      <button id="sidebar-toggle" class="btn-icon" title="展开/收起菜单">☰</button>
+      <button id="theme-toggle" class="btn-icon" title="切换主题">
+        <span class="theme-icon" id="theme-icon">🌙</span>
+      </button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <!-- Sidebar -->
+    <aside class="glass sidebar" id="sidebar">
+      <nav class="sidebar-nav">
+        <button data-tab="dashboard" class="nav-item active">
+          <span class="nav-icon">◧</span>
+          <span class="nav-label">Dashboard</span>
+        </button>
+        <button data-tab="models" class="nav-item">
+          <span class="nav-icon">◬</span>
+          <span class="nav-label">Models</span>
+        </button>
+        <button data-tab="chat" class="nav-item">
+          <span class="nav-icon">✉</span>
+          <span class="nav-label">Chat Test</span>
+        </button>
+        <button data-tab="config" class="nav-item">
+          <span class="nav-icon">⛭</span>
+          <span class="nav-label">Config</span>
+        </button>
+        <button data-tab="usage" class="nav-item">
+          <span class="nav-icon">◐</span>
+          <span class="nav-label">Usage / Credits</span>
+        </button>
+      </nav>
+    </aside>
+
+    <!-- Sidebar Overlay (mobile) -->
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <!-- Main Content -->
+    <main>
+      <!-- Dashboard -->
+      <section id="dashboard" class="tab-content active">
+        <div class="page-header">
+          <h2>Dashboard</h2>
+          <p class="page-desc">服务运行状态总览</p>
+        </div>
+        <div id="dashboard-content">
+          <div class="loading">Loading...</div>
+        </div>
+      </section>
+
+      <!-- Models -->
+      <section id="models" class="tab-content">
+        <div class="page-header">
+          <h2>Models</h2>
+          <p class="page-desc">可用模型列表</p>
+        </div>
+        <div id="models-content">
+          <div class="loading">Loading...</div>
+        </div>
+      </section>
+
+      <!-- Chat Test -->
+      <section id="chat" class="tab-content">
+        <div class="page-header">
+          <h2>Chat Test</h2>
+          <p class="page-desc">测试与模型的对话交互</p>
+        </div>
+        <div class="chat-layout">
+          <div class="glass chat-panel">
+            <div class="chat-header">
+              <h3>Chat</h3>
+            </div>
+            <div id="chat-messages" class="chat-messages">
+              <div class="chat-placeholder">
+                <span class="chat-placeholder-icon">✉</span>
+                <p>Send a message to start chatting</p>
+              </div>
+            </div>
+            <div class="chat-input-area">
+              <div class="chat-model-select">
+                <select id="chat-model"></select>
+              </div>
+              <div class="chat-textarea-wrap">
+                <textarea id="chat-message" rows="3" placeholder="Enter your message..."></textarea>
+                <button id="chat-send" class="btn primary chat-send-btn" type="submit">
+                  <span class="send-icon">→</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Config -->
+      <section id="config" class="tab-content">
+        <div class="page-header">
+          <h2>Config</h2>
+          <p class="page-desc">配置客户端连接信息</p>
+        </div>
+        <div id="config-content">
+          <div class="config-grid">
+            <div class="glass card">
+              <div class="card-header">
+                <span class="card-icon">◬</span>
+                <h3>OpenAI Compatible</h3>
+              </div>
+              <p class="card-desc">For clients that support custom OpenAI-compatible endpoints:</p>
+              <div class="code-block">
+                <pre><code id="config-openai">{
+  "baseUrl": "http://127.0.0.1:3000/v1",
+  "apiKey": "not-used"
+}</code></pre>
+                <button class="btn copy" data-target="config-openai">Copy</button>
+              </div>
+            </div>
+
+            <div class="glass card">
+              <div class="card-header">
+                <span class="card-icon">◬</span>
+                <h3>Anthropic Compatible</h3>
+              </div>
+              <p class="card-desc">For clients that support custom Anthropic-compatible endpoints:</p>
+              <div class="code-block">
+                <pre><code id="config-anthropic">ANTHROPIC_BASE_URL=http://127.0.0.1:3000
+ANTHROPIC_AUTH_TOKEN=not-used</code></pre>
+                <button class="btn copy" data-target="config-anthropic">Copy</button>
+              </div>
+            </div>
+
+            <div class="glass card">
+              <div class="card-header">
+                <span class="card-icon">◬</span>
+                <h3>OpenCode</h3>
+              </div>
+              <p class="card-desc">Use with OpenCode CLI:</p>
+              <div class="code-block">
+                <pre><code id="config-opencode">opencode run --model qoder-cn-local/qwen3.7-max --variant high "reply OK"</code></pre>
+                <button class="btn copy" data-target="config-opencode">Copy</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Usage / Credits -->
+      <section id="usage" class="tab-content">
+        <div class="page-header">
+          <h2>Usage / Credits</h2>
+          <p class="page-desc">本地使用统计与配额信息</p>
+        </div>
+        <div id="usage-content">
+          <div class="loading">Loading...</div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <footer>
+    <p>Usage statistics are local estimates only. They do not represent official Qoder billing or remaining quota.</p>
+    <p>This UI does not read, save, or display Qoder PAT.</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

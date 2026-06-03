@@ -21,6 +21,8 @@ const {
   normalizeAnthropicTools,
   formatToolResultForPrompt,
 } = require('./tool-parser');
+const path = require('path');
+const { trackRequest, getUsage, resetUsage, saveUsage, extractTextFromMessages } = require('./usage');
 
 const MODEL_ID = DEFAULT_MODEL_ID;
 
@@ -321,6 +323,12 @@ function createApp() {
         res.write('data: [DONE]\n\n');
         res.end();
         log('chat stream completed', { duration_ms: Date.now() - started });
+        trackRequest({
+          model,
+          inputText: extractTextFromMessages(req.body.messages),
+          outputText: '',
+          isError: false,
+        });
         return;
       }
 
@@ -352,12 +360,24 @@ function createApp() {
         res.json(createChatCompletion({ model, content, parsedOutput }));
       }
       log('chat request completed', { duration_ms: Date.now() - started });
+      trackRequest({
+        model,
+        inputText: extractTextFromMessages(req.body.messages),
+        outputText: content || '',
+        isError: false,
+      });
     } catch (error) {
       log('chat request failed', {
         code: error.code || 'internal_error',
         status: error.status || 500,
         duration_ms: Date.now() - started,
         message: error.message,
+      });
+      trackRequest({
+        model: req.body?.model || MODEL_ID,
+        inputText: extractTextFromMessages(req.body?.messages),
+        outputText: '',
+        isError: true,
       });
       if (!res.headersSent && !res.writableEnded) openAiError(res, error);
     }
@@ -452,6 +472,12 @@ function createApp() {
         writeAnthropicSse(res, 'message_stop', { type: 'message_stop' });
         res.end();
         log('anthropic stream completed', { duration_ms: Date.now() - started });
+        trackRequest({
+          model,
+          inputText: extractTextFromMessages(req.body.messages),
+          outputText: '',
+          isError: false,
+        });
         return;
       }
 
@@ -483,12 +509,24 @@ function createApp() {
         res.json(createAnthropicMessage({ model, content, parsedOutput }));
       }
       log('anthropic message request completed', { duration_ms: Date.now() - started });
+      trackRequest({
+        model,
+        inputText: extractTextFromMessages(req.body.messages),
+        outputText: content || '',
+        isError: false,
+      });
     } catch (error) {
       log('anthropic message request failed', {
         code: error.code || 'internal_error',
         status: error.status || 500,
         duration_ms: Date.now() - started,
         message: error.message,
+      });
+      trackRequest({
+        model: req.body?.model || MODEL_ID,
+        inputText: extractTextFromMessages(req.body?.messages),
+        outputText: '',
+        isError: true,
       });
       if (!res.headersSent && !res.writableEnded) anthropicError(res, error);
     }
@@ -501,6 +539,34 @@ function createApp() {
       anthropicError(res, error);
     }
   });
+
+  // --- Usage / Credits API ---
+  app.get('/usage/local', (_req, res) => {
+    res.json(getUsage());
+  });
+
+  app.post('/usage/reset-local', (_req, res) => {
+    resetUsage();
+    res.json({ ok: true });
+  });
+
+  // --- Static Web Console at /ui ---
+  const publicDir = path.join(__dirname, '..', 'public');
+
+  // Redirect /ui → /ui/ so relative asset paths resolve correctly in the browser
+  app.use('/ui', (req, res, next) => {
+    if (req.originalUrl === '/ui' || req.originalUrl === '/ui?') {
+      return res.redirect(301, '/ui/');
+    }
+    next();
+  });
+
+  // Serve /ui/ → index.html, and static assets under /ui/*
+  app.get('/ui/', (_req, res) => {
+    res.sendFile(path.join(publicDir, 'index.html'));
+  });
+
+  app.use('/ui', express.static(publicDir));
 
   app.use((_req, res) => {
     openAiError(res, new AppError(404, 'not_found', 'Route not found.'));

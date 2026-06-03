@@ -6,3 +6,4 @@ node_modules/
 .runtime/
 /server.js
 MAINTENANCE_LOCAL.md
+usage.json

@@ -194,6 +194,45 @@ curl.exe http://127.0.0.1:3000/v1/chat/completions `
 npm test
 ```
 
+## 本地 Web 控制台
+
+启动后访问本地 Web 控制台：
+
+```
+http://127.0.0.1:3000/ui
+```
+
+快捷启动（自动打开浏览器）：
+
+```powershell
+.\start-ui.cmd
+```
+
+### 功能
+
+| Tab | 说明 |
+|-----|------|
+| Dashboard | 显示 /health 状态、Base URL、模型数量、安全状态 |
+| Models | 调用 /v1/models 显示模型列表 |
+| Chat Test | 用 /v1/chat/completions 做简单非流式测试 |
+| Config | 生成 OpenAI Compatible / Anthropic Compatible / OpenCode 配置示例 |
+| Usage / Credits | 本地用量统计 |
+
+### 本地用量统计说明
+
+- Usage 页面显示的是**本地估算数据**，不代表 Qoder 官方账单或剩余额度
+- token 数量基于简单字符数估算，标记为 `estimated`，不宣称准确
+- 统计数据保存在内存中，持久化到本地 `usage.json`（不保存 prompt 正文、响应正文、token、Authorization、cookie）
+- 官方额度：`qoderclicn --help` 中没有 quota/credits/usage 命令，因此**不实现官方额度自动读取**
+- UI 不会读取、保存、显示 Qoder PAT
+
+### Usage API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/usage/local` | 返回本地用量统计 |
+| POST | `/usage/reset-local` | 重置本地用量统计 |
+
 ## 许可证
 
 MIT。详见 [LICENSE](LICENSE)。

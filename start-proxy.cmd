@@ -42,6 +42,7 @@ echo.
 
 echo Proxy will listen on:
 echo   http://127.0.0.1:3000
+echo Keep this service local. Do not bind to 0.0.0.0 or expose it publicly.
 echo.
 echo Endpoints:
 echo   GET  http://127.0.0.1:3000/health

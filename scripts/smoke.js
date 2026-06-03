@@ -160,7 +160,7 @@ async function main() {
     await check('POST /v1/chat/completions (stream)', testChatCompletionsStream);
     await check('POST /v1/messages', testAnthropicMessages);
   } else {
-    skip('POST /v1/chat/completions', 'use --full to test (requires token, costs quota)');
+    skip('POST /v1/chat/completions', 'use --full to test (requires a valid PAT and live model access)');
     skip('POST /v1/chat/completions (stream)', 'use --full to test');
     skip('POST /v1/messages', 'use --full to test');
   }

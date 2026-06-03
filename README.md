@@ -1,43 +1,66 @@
 # Qoder CN Proxy
 
-将 Qoder CN CLI (`qoderclicn`) 封装为本地 OpenAI / Anthropic 兼容 API，使 OpenCode、SillyTavern、Claude Code 等工具能够直接对接 Qoder CN 的模型能力。
+## 免责声明
 
-本项目仅供学习与本地实验使用，与 Qoder 官方无关。
+本项目仅用于个人账号的本地兼容性实验与协议适配研究。
+使用者必须自行持有合法的 Qoder 账号和 Personal Access Token。
+本项目不提供、共享、转售、出租任何 Qoder 账号、Token 或额度。
+不得将本项目部署为公网服务、公益站、商业 API、中转站或多人共享服务。
+不得用于规避 Qoder 官方的计费、风控、速率限制、地域限制或使用限制。
+请遵守 Qoder 官方服务条款；如官方不允许，请立即停止使用。
+本项目与 Qoder 官方无关。
 
 [English](README.en.md)
 
+## 项目定位
+
+本项目把 Qoder CN CLI (`qoderclicn`) 适配为仅供本机访问的 OpenAI / Anthropic 兼容 HTTP 接口，用于研究不同客户端协议、消息格式、流式响应和工具调用格式之间的差异。
+
+它不是官方 API，不代表 Qoder 官方授权，也不提供任何账号、Token 或额度服务。所有请求都依赖使用者自行配置的个人 Qoder CN Personal Access Token。
+
 ## 工作原理
 
-`qoderclicn` 是一个命令行工具，只接受文本输入、返回文本输出。而大多数开发工具期望对接的是 OpenAI 或 Anthropic 格式的 HTTP API。本代理充当中间层：接收 API 格式的请求，将其转换为 CLI 调用，再将 CLI 输出转换回 API 格式返回。
+`qoderclicn` 是命令行工具，接受文本输入并返回文本输出。许多本地客户端或开发工具使用 OpenAI 或 Anthropic 格式的 HTTP API。本项目作为本地适配层：接收兼容格式请求，将其转换为 CLI 调用，再把 CLI 输出整理为兼容格式响应。
 
-支持两种 API 格式：
+支持两种本地协议格式：
 
-- **OpenAI 格式**（`/v1/chat/completions`）—— 适用于 OpenCode、SillyTavern 等支持 OpenAI 兼容接口的工具
-- **Anthropic 格式**（`/v1/messages`）—— 适用于 Claude Code
+- **OpenAI 兼容格式**：`/v1/chat/completions`
+- **Anthropic 兼容格式**：`/v1/messages`
 
-两种格式均已支持工具调用（`tool_calls` / `tool_use`），可运行 Agent 模式。
+两种格式均支持工具调用字段适配（`tool_calls` / `tool_use`），用于协议兼容性研究。可靠性取决于底层模型是否能稳定输出符合格式的 JSON。
 
 ## 工具调用实现方式
 
-由于 `qoderclicn` 本身只处理文本，不具备原生的工具调用通道，代理采用 Prompt 注入 + 输出解析的方式实现：将工具定义注入到 Prompt 中作为格式指令，再从模型的文本输出中提取 JSON 并解析为工具调用。
+由于 `qoderclicn` 本身只处理文本，不具备原生工具调用通道，本项目采用 Prompt 格式指令 + 输出解析的方式实现工具调用适配：将工具定义作为格式说明加入请求上下文，再从模型文本输出中提取 JSON。
 
-这与直接调用 OpenAI 或 DeepSeek 等官方 API 有本质区别 —— 官方 API 提供独立的 `tools` 参数通道，模型原生理解工具调用协议。代理只能通过 Prompt 模拟，因此可靠性取决于底层模型是否能稳定输出符合格式的 JSON。
-
-## Prompt 注入策略（反污染）
-
-代理采用三条路径，仅在必要时注入最少内容：
-
-- **客户端自带 system prompt（无工具）**：零注入。模型行为完全由客户端的 system prompt 控制，代理不添加任何内容。
-- **简单对话（无 system prompt，无工具）**：仅注入一句元指令 —— "回答对话中最新的用户消息"，不构成角色定义。
-- **Agent 模式（有工具参数）**：仅注入 `[Tool Protocol]` 格式指令，包含工具列表和输出格式规范，不含任何角色定义语句。
+这与直接调用 OpenAI、Anthropic、DeepSeek 等官方 API 不同。官方 API 通常提供原生 `tools` 参数通道；本项目只能做文本层面的协议模拟，因此不应把它视为等价替代。
 
 ## 安全边界
 
-- 认证仅使用环境变量 `QODERCN_PERSONAL_ACCESS_TOKEN`，不读取桌面客户端的登录状态
-- 仅监听 `127.0.0.1`，不暴露到网络
+- 认证仅使用环境变量 `QODERCN_PERSONAL_ACCESS_TOKEN`，不读取桌面客户端登录状态
+- 默认仅监听 `127.0.0.1`
+- 不建议也不支持作为公网服务、共享服务或商业 API 使用
 - 日志自动脱敏 token、cookie、Authorization 头等敏感信息
 - 不扫描 `%APPDATA%`、`%LOCALAPPDATA%` 或 `~/.qoderwork`
 - `.env`、token、日志均不纳入版本控制
+
+## 禁止用途 / Abuse Policy
+
+- 禁止公网部署
+- 禁止多人共享
+- 禁止转售 API
+- 禁止绕过官方计费、风控、速率、地域或使用限制
+- 禁止收集、保存或转发他人的 Token
+- 禁止提供、共享、出租、转售任何账号、Token 或额度
+
+## 安全建议
+
+- 只在本机使用
+- 只监听 `127.0.0.1`
+- 不要绑定 `0.0.0.0`，不要暴露到公网
+- 不要把 Token 发给别人
+- 不要把 `.env` 提交到 Git
+- 如果怀疑 Token 泄露，立即到 Qoder 官方账号页面吊销 PAT 并重新创建
 
 ## 安装
 
@@ -55,17 +78,17 @@ npm install
 Copy-Item .env.example .env
 ```
 
-编辑 `.env`，填入令牌：
+编辑 `.env`，填入你个人账号创建的 Personal Access Token：
 
-```
+```env
 QODERCN_PERSONAL_ACCESS_TOKEN=your-token-here
 ```
 
-令牌创建地址：https://qoder.com.cn/account/integrations （创建后仅显示一次，请妥善保存）
+PAT 创建入口：https://qoder.com.cn/account/integrations
 
-还没有 Qoder CN 账号？通过[此链接注册](https://qoder.com.cn/referral?referral_code=pex0n1GlDjFK4aT1BWpiCoSyEjDGD6GB)可获得额外额度。
+可选官方邀请入口：https://qoder.com.cn/referral?referral_code=pex0n1GlDjFK4aT1BWpiCoSyEjDGD6GB
 
-请勿将 `.env` 提交到 Git。
+创建后请妥善保存。不要将 `.env` 提交到 Git，也不要把 Token 填入第三方客户端或分享给他人。
 
 启动：
 
@@ -75,53 +98,50 @@ npm start
 
 Windows 也可以双击 `start-proxy.cmd`。
 
+启动后默认地址为：
+
+```text
+http://127.0.0.1:3000
+```
+
+如果你通过环境变量或代码改动手动设置 host，请保持 `127.0.0.1`。不要绑定 `0.0.0.0`，不要通过端口映射、反向代理、隧道或云服务器暴露给公网。
+
 ## 支持的模型
 
 `qoder-cn`、`auto`、`qwen3.7-max`、`glm-5.1`、`kimi-k2.6`、`qwen3.6-plus`、`qwen3.6-flash`、`deepseek-v4-pro`、`deepseek-v4-flash`
 
 Qwen3.7-Max 推理强度别名：`qwen3.7-max-effort-low`、`-medium`、`-high`、`-max`
 
-## 客户端接入指南
+## 本地客户端适配
 
-### OpenCode
+### OpenAI 兼容接口
 
-仓库自带 `opencode.json` 配置文件，从项目目录启动 OpenCode 即可：
+适用于支持自定义 OpenAI 兼容接口的本地客户端：
 
-```powershell
-opencode run --model qoder-cn-local/qwen3.7-max --variant high "reply OK"
-```
-
-也可直接使用推理强度别名：
-
-```powershell
-opencode run --model qoder-cn-local/qwen3.7-max-effort-high "reply OK"
-```
-
-### SillyTavern
-
-使用 Chat Completion 的自定义 OpenAI 兼容源：
-
-- API 类型：Chat Completion
-- Source：Custom (OpenAI-compatible)
 - Base URL：`http://127.0.0.1:3000/v1`
-- API Key：任意值（如 `not-used`）
-- Model：从下拉列表选择或手动输入模型 ID
+- API Key：填写本地占位值即可，例如 `not-used`
+- Model：从 `/v1/models` 返回列表选择，或手动输入模型 ID
 
-注意：Base URL 不要追加 `/chat/completions`；不要将 Qoder CN 令牌填入 SillyTavern —— 令牌只需配置在代理的 `.env` 中。
+注意：不要将 Qoder CN Token 填入客户端。Token 只应保存在本项目本机 `.env` 中。
 
-### Claude Code
+### Anthropic 兼容接口
+
+适用于支持自定义 Anthropic 兼容接口的本地客户端：
 
 ```powershell
 $env:ANTHROPIC_BASE_URL = "http://127.0.0.1:3000"
 $env:ANTHROPIC_AUTH_TOKEN = "not-used"
-claude --model qwen3.7-max
 ```
 
-`ANTHROPIC_BASE_URL` 不要追加 `/v1`，Claude Code 会自动拼接 API 路径。
+`ANTHROPIC_BASE_URL` 不要追加 `/v1`，客户端通常会自动拼接 API 路径。
 
-已支持 `tool_use` 和 `tool_result`，Claude Code 可以在 Agent 模式下执行文件编辑和命令操作（可靠性取决于底层模型的工具调用 JSON 输出能力）。
+### OpenCode 示例
 
-可选：配置 PowerShell 快捷命令 —— `Claude-qwen`（qwen3.7-max）、`Claude-glm`（glm-5.1）、`Claude-kimi`（kimi-k2.6），大小写不敏感。
+仓库自带 `opencode.json` 配置文件，可用于本地兼容性验证：
+
+```powershell
+opencode run --model qoder-cn-local/qwen3.7-max --variant high "reply OK"
+```
 
 ## API 端点
 
@@ -129,8 +149,8 @@ claude --model qwen3.7-max
 |------|------|------|
 | GET | `/health` | 健康检查 |
 | GET | `/v1/models` | 模型列表 |
-| POST | `/v1/chat/completions` | OpenAI 格式对话（支持 tools） |
-| POST | `/v1/messages` | Anthropic 格式对话（支持 tool_use） |
+| POST | `/v1/chat/completions` | OpenAI 兼容格式对话，支持 tools 字段适配 |
+| POST | `/v1/messages` | Anthropic 兼容格式对话，支持 tool_use 字段适配 |
 | POST | `/v1/messages/count_tokens` | Token 估算 |
 
 ## 推理参数
@@ -147,16 +167,16 @@ $env:QODERCN_MAX_OUTPUT_TOKENS = "4096"
 
 ## 流式输出
 
-当客户端请求 `stream: true` 且不包含工具参数时，代理使用 `qoderclicn --output-format stream-json` 进行实时增量流式输出，文本内容会在生成时即时以 SSE 事件转发给客户端。
+当客户端请求 `stream: true` 且不包含工具参数时，本项目使用 `qoderclicn --output-format stream-json` 进行增量流式输出，并以 SSE 事件转发给本地客户端。
 
-当请求包含工具参数时，流式请求会自动降级为非流式响应（工具调用需要完整 JSON 输出才能解析）。
+当请求包含工具参数时，流式请求会自动降级为非流式响应，因为工具调用解析需要完整 JSON 输出。
 
 ## 当前限制
 
-- 工具调用通过 Prompt 注入 + 文本解析实现，非模型原生能力，可靠性因模型而异
-- 工具调用的响应不走流式，始终为完整 JSON 返回
+- 工具调用通过 Prompt 格式指令 + 文本解析实现，非模型原生能力
+- 工具调用响应不走流式，始终为完整 JSON 返回
 - 每次请求启动一个新的 `qoderclicn` 子进程
-- 若模型输出非法 JSON 或拒绝使用工具格式，响应自动降级为纯文本
+- 如果模型输出非法 JSON 或拒绝使用工具格式，响应会降级为纯文本
 
 ## 快速验证
 
@@ -177,7 +197,3 @@ npm test
 ## 许可证
 
 MIT。详见 [LICENSE](LICENSE)。
-
-## 社区
-
-本项目在 [LINUX DO](https://linux.do) 社区进行开源推广与讨论，欢迎前往交流反馈。

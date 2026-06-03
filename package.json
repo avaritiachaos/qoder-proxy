@@ -1,7 +1,7 @@
 {
   "name": "qoder-cn-proxy",
   "version": "1.1.0",
-  "description": "Local OpenAI/Anthropic-compatible proxy for Qoder CN CLI",
+  "description": "Local protocol adapter for Qoder CN CLI compatibility research",
   "main": "clean/server.js",
   "files": [
     "clean/",
@@ -27,12 +27,11 @@
     "qoder",
     "qoder-cn",
     "qodercn",
-    "opencode",
-    "claude-code",
-    "sillytavern",
     "openai-compatible",
     "anthropic-compatible",
-    "proxy",
+    "local-adapter",
+    "compatibility",
+    "protocol-research",
     "streaming",
     "tool-calls"
   ],

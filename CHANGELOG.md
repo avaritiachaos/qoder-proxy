@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Default timeout increased from 120s to 300s (5 minutes) for tool-heavy requests.
 - `validateChatRequest` no longer rejects `role: 'tool'` messages or `tool_calls` in message history.
-- `validateAnthropicMessagesRequest` now accepts `system` role in messages array (Claude Code compatibility).
+- `validateAnthropicMessagesRequest` now accepts `system` role in messages array for Anthropic-compatible clients.
 - `anthropicToOpenAiMessages` no longer injects a "text-only" warning when tools are provided; instead it injects the actual tool definitions as a system prompt.
 - `normalizeAnthropicText` now uses `<tool_result id="...">` and `<tool_use name="..." id="...">` tags instead of `[tool_result]` / `[tool_use]` bracket format.
 - Streaming responses for tool call outputs are downgraded to non-streaming (single JSON response), since tool calls cannot be incrementally streaming.
@@ -49,9 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Effort aliases for Qwen3.7-Max: `qwen3.7-max-effort-low`, `-medium`, `-high`, `-max`.
 - Per-request reasoning options (`reasoning_effort`, `context_window`, `max_tokens`) and global environment variable overrides.
 - OpenCode integration via project-level `opencode.json`.
-- SillyTavern compatibility through the OpenAI-compatible Chat Completion custom endpoint.
-- Claude Code text-only usage through the Anthropic-compatible endpoint.
-- PowerShell shortcuts for Claude Code: `Claude-qwen`, `Claude-glm`, `Claude-kimi`.
+- Local client compatibility through the OpenAI-compatible Chat Completion custom endpoint.
+- Text-only usage through the Anthropic-compatible endpoint.
+- Optional local PowerShell shortcut examples for model selection.
 - `start-proxy.cmd` launcher with pre-flight checks for `.env` and `QODERCN_PERSONAL_ACCESS_TOKEN`, endpoint URL display, and token redaction.
 - Smoke test suite (`npm run smoke` / `npm run smoke:full`) for quick health and model checks.
 - Unit test suite using the Node.js built-in test runner (`node --test`).

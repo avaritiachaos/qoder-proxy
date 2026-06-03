@@ -67,11 +67,11 @@ function buildPrompt(messages, tools) {
 
   // Three paths to minimize prompt pollution:
   //
-  // 1. Client provides its own system prompt (SillyTavern, 紫苑, etc.)
+  // 1. Client provides its own system prompt
   //    → No injection at all. The client's instructions dominate.
-  // 2. No system prompt, no tools (simple curl/OpenCode chat)
+  // 2. No system prompt, no tools
   //    → Minimal meta-instruction so the model knows what format to follow.
-  // 3. Tools present (Agent mode: Claude Code, 紫苑 with tools)
+  // 3. Tools present
   //    → Only format instructions, no role definitions.
 
   if (hasTools) {

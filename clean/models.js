@@ -23,7 +23,10 @@ function getModel(modelId) {
 
 function resolveCliModel(modelId) {
   if (process.env.QODERCN_MODEL) return process.env.QODERCN_MODEL;
-  return getModel(modelId)?.cliModel || modelId || 'auto';
+  const model = getModel(modelId);
+  if (model) return model.cliModel;
+  // Fallback to auto for unknown models (e.g. claude-haiku, gpt-4, etc.)
+  return 'auto';
 }
 
 function resolveModelRoute(modelId) {

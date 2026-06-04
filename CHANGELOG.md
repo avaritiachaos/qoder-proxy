@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-06-05
+
+### Added
+
+- **Streaming with tools**: Enable streaming responses even when tools are present (e.g. for Claude Code compatibility). Tool call parsing is skipped in streaming mode and returned as plain text deltas, while non-streaming mode still parses tool_calls/tool_use blocks.
+
+### Fixed
+
+- **Avoid Windows command-line limit**: Fixed `ENAMETOOLONG` errors when spawning the CLI on Windows with a large number of tools by moving long system prompts to an attachment file.
+- **Unknown model fallback**: Fallback unknown model IDs (like Claude Code's model IDs) to `auto` instead of passing them directly to the CLI and failing.
+- Add tool-call detection logging to make troubleshooting easier.
+
+## [1.2.0] - 2026-06-03
+
+### Added
+
+- **Web Console UI**: Added a sleek glassmorphic Web Console UI at `/ui` featuring a dashboard, model list, chat test tab, config overview, and usage analytics.
+- **Theme support**: Built-in support for light and dark modes.
+- **Local usage tracking**: Added a usage logging module and API endpoints (`/usage/local`, `/usage/reset-local`) with local database storage (`usage.json`).
+- Added `start-ui.cmd` launcher script.
+
 ## [1.1.0] - 2026-06-01
 
 ### Added

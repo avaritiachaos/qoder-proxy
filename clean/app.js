@@ -347,6 +347,14 @@ function createApp() {
       let parsedOutput = null;
       if (normalizedTools) {
         parsedOutput = parseToolCallOutput(content);
+        if (parsedOutput && parsedOutput.type === 'tool_calls') {
+          log('chat tool calls detected', {
+            tool_count: parsedOutput.toolCalls.length,
+            tools: parsedOutput.toolCalls.map((t) => t.name),
+          });
+        } else {
+          log('chat no tool calls detected', { response_type: parsedOutput?.type || 'text' });
+        }
       }
 
       if (req.body.stream) {
@@ -496,6 +504,14 @@ function createApp() {
       let parsedOutput = null;
       if (tools) {
         parsedOutput = parseToolCallOutput(content);
+        if (parsedOutput && parsedOutput.type === 'tool_calls') {
+          log('anthropic tool calls detected', {
+            tool_count: parsedOutput.toolCalls.length,
+            tools: parsedOutput.toolCalls.map((t) => t.name),
+          });
+        } else {
+          log('anthropic no tool calls detected', { response_type: parsedOutput?.type || 'text' });
+        }
       }
 
       if (req.body.stream) {

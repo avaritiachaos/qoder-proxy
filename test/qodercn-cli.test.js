@@ -10,6 +10,7 @@ const {
   createPromptAttachment,
   extractAssistantContent,
   extractStreamDelta,
+  fixLongAppendSystemPrompt,
 } = require('../clean/qodercn-cli');
 const { resolveModelRoute } = require('../clean/models');
 
@@ -204,4 +205,61 @@ test('extractStreamDelta joins multiple text blocks', () => {
     },
   };
   assert.equal(extractStreamDelta(record), 'first second');
+});
+
+test('fixLongAppendSystemPrompt returns original args on non-Windows', () => {
+  const args = ['--print', '--append-system-prompt', 'sys', '--model', 'auto'];
+  const result = fixLongAppendSystemPrompt(args, '/tmp/prompt.txt', 'qoderclicn');
+  assert.deepEqual(result, args);
+});
+
+test('fixLongAppendSystemPrompt moves long system prompt into attachment on Windows', () => {
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: 'win32' });
+  try {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qodercn-fix-'));
+    const attachmentPath = path.join(tempDir, 'prompt.txt');
+    fs.writeFileSync(attachmentPath, 'original content', 'utf8');
+
+    const longSystemPrompt = 'x'.repeat(40000);
+    const args = ['--print', '--append-system-prompt', longSystemPrompt, '--model', 'auto'];
+    const result = fixLongAppendSystemPrompt(args, attachmentPath, 'qoderclicn');
+
+    // --append-system-prompt should be removed from args
+    assert.equal(result.includes('--append-system-prompt'), false);
+    assert.equal(result.includes(longSystemPrompt), false);
+
+    // system prompt should be prepended to attachment
+    const newContent = fs.readFileSync(attachmentPath, 'utf8');
+    assert.equal(newContent.startsWith(longSystemPrompt + '\n\noriginal content'), true);
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  } finally {
+    Object.defineProperty(process, 'platform', originalPlatform);
+  }
+});
+
+test('fixLongAppendSystemPrompt keeps args when command line is short', () => {
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: 'win32' });
+  try {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qodercn-short-'));
+    const attachmentPath = path.join(tempDir, 'prompt.txt');
+    fs.writeFileSync(attachmentPath, 'original content', 'utf8');
+
+    const shortSystemPrompt = 'be helpful';
+    const args = ['--print', '--append-system-prompt', shortSystemPrompt, '--model', 'auto'];
+    const result = fixLongAppendSystemPrompt(args, attachmentPath, 'qoderclicn');
+
+    // args should remain unchanged because total length is below threshold
+    assert.deepEqual(result, args);
+
+    // attachment should remain unchanged
+    const content = fs.readFileSync(attachmentPath, 'utf8');
+    assert.equal(content, 'original content');
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  } finally {
+    Object.defineProperty(process, 'platform', originalPlatform);
+  }
 });

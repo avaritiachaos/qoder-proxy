@@ -269,6 +269,37 @@ function buildSpawnCommand(command, args) {
   return { command, args };
 }
 
+/**
+ * Windows command line has a ~32,767 character limit (CreateProcessW).
+ * When --append-system-prompt is too long, prepend it to the attachment
+ * file and remove it from CLI args to avoid spawn ENAMETOOLONG.
+ */
+function fixLongAppendSystemPrompt(args, attachmentPath, command) {
+  if (process.platform !== 'win32' || !attachmentPath) return args;
+
+  const idx = args.indexOf('--append-system-prompt');
+  if (idx === -1) return args;
+
+  const systemPrompt = args[idx + 1];
+  if (!systemPrompt) return args;
+
+  // Rough estimate: include command name and a safety margin
+  const totalLength = (command?.length || 10) + args.reduce((acc, s) => acc + s.length + 1, 0);
+  if (totalLength < 30000) return args;
+
+  try {
+    const original = fs.readFileSync(attachmentPath, 'utf8');
+    fs.writeFileSync(attachmentPath, systemPrompt + '\n\n' + original, 'utf8');
+  } catch (e) {
+    // If we can't modify the file, keep original args and hope for the best
+    return args;
+  }
+
+  const newArgs = [...args];
+  newArgs.splice(idx, 2);
+  return newArgs;
+}
+
 function createPromptAttachment(rootDir, prompt) {
   const promptDir = path.join(rootDir, '.runtime', 'prompts');
   fs.mkdirSync(promptDir, { recursive: true });
@@ -328,6 +359,7 @@ function runQoderCnCli({
     appendSystemPrompt: appendSystemPrompt || undefined,
   });
   const spawnSpec = buildSpawnCommand(command, args);
+  const finalArgs = fixLongAppendSystemPrompt(spawnSpec.args, attachmentPath, spawnSpec.command);
 
   return new Promise((resolve, reject) => {
     let stdoutBytes = 0;
@@ -337,7 +369,7 @@ function runQoderCnCli({
     let settled = false;
     let timedOut = false;
 
-    const child = spawn(spawnSpec.command, spawnSpec.args, {
+    const child = spawn(spawnSpec.command, finalArgs, {
       cwd: rootDir,
       env: buildChildEnv(rootDir, token),
       windowsHide: true,
@@ -494,6 +526,7 @@ function runQoderCnCliStream({
     stream: true,
   });
   const spawnSpec = buildSpawnCommand(command, args);
+  const finalArgs = fixLongAppendSystemPrompt(spawnSpec.args, attachmentPath, spawnSpec.command);
 
   return new Promise((resolve, reject) => {
     let stdoutBytes = 0;
@@ -504,7 +537,7 @@ function runQoderCnCliStream({
     let lineBuffer = '';
     const fullTextParts = [];
 
-    const child = spawn(spawnSpec.command, spawnSpec.args, {
+    const child = spawn(spawnSpec.command, finalArgs, {
       cwd: rootDir,
       env: buildChildEnv(rootDir, token),
       windowsHide: true,
@@ -629,6 +662,7 @@ module.exports = {
   createPromptAttachment,
   extractAssistantContent,
   extractStreamDelta,
+  fixLongAppendSystemPrompt,
   normalizeMessages,
   runQoderCnCli,
   runQoderCnCliStream,

@@ -261,7 +261,7 @@ function createApp() {
       });
 
       // True streaming: stream-json mode, real-time SSE forwarding
-      if (req.body.stream && !normalizedTools) {
+      if (req.body.stream) {
         const id = `chatcmpl-${Date.now()}`;
         const created = Math.floor(Date.now() / 1000);
 
@@ -284,7 +284,7 @@ function createApp() {
           await qoderCli.runQoderCnCliStream({
             messages: req.body.messages,
             model,
-            tools: null,
+            tools: normalizedTools,
             reasoningEffort: requestOptions.reasoningEffort,
             contextWindow: requestOptions.contextWindow,
             maxOutputTokens: requestOptions.maxOutputTokens,
@@ -410,7 +410,7 @@ function createApp() {
       });
 
       // True streaming: stream-json mode, real-time SSE forwarding
-      if (req.body.stream && !tools) {
+      if (req.body.stream) {
         const msgId = `msg_${Date.now()}`;
 
         res.status(200);
@@ -442,7 +442,7 @@ function createApp() {
           await qoderCli.runQoderCnCliStream({
             messages,
             model,
-            tools: null,
+            tools,
             reasoningEffort: requestOptions.reasoningEffort,
             contextWindow: requestOptions.contextWindow,
             maxOutputTokens: requestOptions.maxOutputTokens || req.body.max_tokens,

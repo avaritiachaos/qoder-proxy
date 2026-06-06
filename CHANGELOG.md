@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-06-06
+
+### Added
+
+- **Dual CLI backend**: Support both Qoder CN (`qoderclicn`) and Qoder Global (`qodercli`) via `CLI_BACKEND` env var.
+- **Web Console**: Dashboard now shows the active CLI backend.
+
+### Changed
+
+- **Project renamed**: "Qoder CN Proxy" → "Qoder Proxy" to reflect dual-backend support.
+- npm package renamed from `qoder-cn-proxy` to `qoder-proxy`.
+
+### Fixed
+
+- **Windows npm shim path**: Correctly resolve `qoderclicn` / `qodercli` bundle paths on Windows.
+
 ## [1.3.0] - 2026-06-05
 
 ### Added

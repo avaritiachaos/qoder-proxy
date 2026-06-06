@@ -11,6 +11,7 @@ const {
   extractAssistantContent,
   extractStreamDelta,
   fixLongAppendSystemPrompt,
+  resolveCliCommand,
 } = require('../clean/qodercn-cli');
 const { resolveModelRoute } = require('../clean/models');
 
@@ -142,6 +143,32 @@ test('uses qoderclicn JS bundle directly when npm cmd shim is available', () => 
   } finally {
     Object.defineProperty(process, 'platform', originalPlatform);
     fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test('resolves bare qoderclicn command to Windows npm cmd shim on PATH', () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'qodercn-path-'));
+  const shim = path.join(temp, 'qoderclicn.cmd');
+  fs.writeFileSync(shim, '@echo off\n');
+
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: 'win32' });
+  try {
+    const command = resolveCliCommand('qoderclicn', { PATH: temp, PATHEXT: '.EXE;.BAT;.CMD' });
+    assert.equal(command, shim);
+  } finally {
+    Object.defineProperty(process, 'platform', originalPlatform);
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test('resolveCliCommand keeps explicit CLI paths unchanged', () => {
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: 'win32' });
+  try {
+    assert.equal(resolveCliCommand('C:\\bin\\qoderclicn.cmd', { PATH: '' }), 'C:\\bin\\qoderclicn.cmd');
+  } finally {
+    Object.defineProperty(process, 'platform', originalPlatform);
   }
 });
 

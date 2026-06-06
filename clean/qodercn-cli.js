@@ -269,6 +269,46 @@ function buildSpawnCommand(command, args) {
   return { command, args };
 }
 
+function hasPathSeparator(command) {
+  return /[\\/]/.test(command);
+}
+
+function pathEnv(env = process.env) {
+  const key = Object.keys(env).find((name) => name.toLowerCase() === 'path');
+  return key ? env[key] || '' : '';
+}
+
+function executableExists(filePath) {
+  try {
+    return fs.statSync(filePath).isFile();
+  } catch (_) {
+    return false;
+  }
+}
+
+function resolveCliCommand(command, env = process.env) {
+  if (process.platform !== 'win32' || hasPathSeparator(command)) return command;
+
+  const commandExt = path.extname(command);
+  const defaultExts = ['.cmd', '.exe', '.bat', '.com'];
+  const envExts = (env.PATHEXT || '')
+    .split(';')
+    .map((ext) => ext.trim().toLowerCase())
+    .filter(Boolean);
+  const candidateExts = commandExt
+    ? ['']
+    : [...defaultExts, ...envExts.filter((ext) => !defaultExts.includes(ext))];
+
+  for (const dir of pathEnv(env).split(';').filter(Boolean)) {
+    for (const ext of candidateExts) {
+      const candidate = path.join(dir, command + ext);
+      if (executableExists(candidate)) return candidate;
+    }
+  }
+
+  return command;
+}
+
 /**
  * Windows command line has a ~32,767 character limit (CreateProcessW).
  * When --append-system-prompt is too long, prepend it to the attachment
@@ -339,7 +379,7 @@ function runQoderCnCli({
     .filter(Boolean)
     .join('\n\n');
 
-  const command = process.env.QODERCN_CLI_PATH || 'qoderclicn';
+  const command = resolveCliCommand(process.env.QODERCN_CLI_PATH || 'qoderclicn');
   const modelRoute = resolveModelRoute(model);
   const cliModel = modelRoute.cliModel;
   // Build prompt with non-system messages only (system prompt goes via CLI flag)
@@ -506,7 +546,7 @@ function runQoderCnCliStream({
     .filter(Boolean)
     .join('\n\n');
 
-  const command = process.env.QODERCN_CLI_PATH || 'qoderclicn';
+  const command = resolveCliCommand(process.env.QODERCN_CLI_PATH || 'qoderclicn');
   const modelRoute = resolveModelRoute(model);
   const cliModel = modelRoute.cliModel;
   const prompt = buildPrompt(nonSystemMessages, tools);
@@ -664,6 +704,7 @@ module.exports = {
   extractStreamDelta,
   fixLongAppendSystemPrompt,
   normalizeMessages,
+  resolveCliCommand,
   runQoderCnCli,
   runQoderCnCliStream,
 };

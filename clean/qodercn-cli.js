@@ -11,6 +11,41 @@ const MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
 const ATTACHMENT_INSTRUCTION =
   'Answer the attached OpenAI-compatible chat completion request. Return only the final assistant message content.';
 
+/**
+ * Resolve the CLI backend configuration.
+ *
+ * Supports two backends:
+ *   - "cn"     → qoderclicn  (Qoder CN, auth in .qoderworkcn)
+ *   - "global" → qodercli    (Qoder international, auth in .qoder)
+ *
+ * The backend is selected via CLI_BACKEND env var (default: "cn").
+ * Individual fields can be overridden with CLI_COMMAND and CLI_TOKEN.
+ */
+function getCliBackend() {
+  const backend = (process.env.CLI_BACKEND || 'cn').toLowerCase();
+
+  if (backend === 'global') {
+    return {
+      name: 'global',
+      command: process.env.CLI_COMMAND || 'qodercli',
+      bundlePackage: '@qoder-ai/qodercli',
+      bundlePath: path.join('bundle', 'qodercli.js'),
+      homeDir: path.join(process.env.USERPROFILE || process.env.HOME || '~', '.qoder'),
+      tokenEnvVar: 'QODER_PAT',
+    };
+  }
+
+  // Default: cn
+  return {
+    name: 'cn',
+    command: process.env.CLI_COMMAND || 'qoderclicn',
+    bundlePackage: '@qodercn-ai/qoderclicn',
+    bundlePath: path.join('bundle', 'qoderclicn.js'),
+    homeDir: path.join(process.env.USERPROFILE || process.env.HOME || '~', '.qoderworkcn'),
+    tokenEnvVar: 'QODERCN_PERSONAL_ACCESS_TOKEN',
+  };
+}
+
 function normalizeContent(content) {
   if (content == null) return '';
   if (typeof content === 'string') return content;
@@ -182,16 +217,15 @@ function ensureRuntimeHome(rootDir) {
   return runtimeHome;
 }
 
-function buildChildEnv(rootDir, token) {
-  const runtimeHome = ensureRuntimeHome(rootDir);
-  return {
-    ...process.env,
-    QODERCN_PERSONAL_ACCESS_TOKEN: token,
-    HOME: runtimeHome,
-    USERPROFILE: runtimeHome,
-    APPDATA: path.join(runtimeHome, 'AppData', 'Roaming'),
-    LOCALAPPDATA: path.join(runtimeHome, 'AppData', 'Local'),
-  };
+function buildChildEnv(rootDir, token, backend) {
+  ensureRuntimeHome(rootDir);
+  const cfg = backend || getCliBackend();
+  // Don't override HOME/USERPROFILE — let the CLI find its auth config
+  // in the real home directory (same as running the CLI directly).
+  const env = { ...process.env };
+  // Set the backend-specific token env var
+  env[cfg.tokenEnvVar] = token;
+  return env;
 }
 
 function appendChunk(chunks, chunk, currentBytes) {
@@ -245,20 +279,19 @@ function buildCliArgs({
   return args;
 }
 
-function buildSpawnCommand(command, args) {
+function buildSpawnCommand(command, args, backend) {
   if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(command)) {
-    const qodercnBundle = path.join(
+    const cfg = backend || getCliBackend();
+    const bundle = path.join(
       path.dirname(command),
       'node_modules',
-      '@qodercn-ai',
-      'qoderclicn',
-      'bundle',
-      'qoderclicn.js'
+      cfg.bundlePackage,
+      cfg.bundlePath
     );
-    if (fs.existsSync(qodercnBundle)) {
+    if (fs.existsSync(bundle)) {
       return {
         command: process.execPath,
-        args: [qodercnBundle, ...args],
+        args: [bundle, ...args],
       };
     }
     return {
@@ -361,12 +394,13 @@ function runQoderCnCli({
   signal,
   rootDir = process.cwd(),
 }) {
-  const token = process.env.QODERCN_PERSONAL_ACCESS_TOKEN;
+  const backend = getCliBackend();
+  const token = process.env[backend.tokenEnvVar];
   if (!token) {
     throw new AppError(
       401,
-      'qodercn_token_missing',
-      'QODERCN_PERSONAL_ACCESS_TOKEN is not configured.',
+      'cli_token_missing',
+      `${backend.tokenEnvVar} is not configured. Set it in .env or run \`${backend.command} login\` first.`,
       'authentication_error'
     );
   }
@@ -379,7 +413,7 @@ function runQoderCnCli({
     .filter(Boolean)
     .join('\n\n');
 
-  const command = resolveCliCommand(process.env.QODERCN_CLI_PATH || 'qoderclicn');
+  const command = resolveCliCommand(process.env.CLI_COMMAND || process.env.QODERCN_CLI_PATH || backend.command);
   const modelRoute = resolveModelRoute(model);
   const cliModel = modelRoute.cliModel;
   // Build prompt with non-system messages only (system prompt goes via CLI flag)
@@ -398,7 +432,7 @@ function runQoderCnCli({
     attachmentPath,
     appendSystemPrompt: appendSystemPrompt || undefined,
   });
-  const spawnSpec = buildSpawnCommand(command, args);
+  const spawnSpec = buildSpawnCommand(command, args, backend);
   const finalArgs = fixLongAppendSystemPrompt(spawnSpec.args, attachmentPath, spawnSpec.command);
 
   return new Promise((resolve, reject) => {
@@ -411,7 +445,7 @@ function runQoderCnCli({
 
     const child = spawn(spawnSpec.command, finalArgs, {
       cwd: rootDir,
-      env: buildChildEnv(rootDir, token),
+      env: buildChildEnv(rootDir, token, backend),
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -442,11 +476,11 @@ function runQoderCnCli({
     signal?.addEventListener?.('abort', onAbort, { once: true });
 
     child.on('error', (error) => {
-      const code = error.code === 'ENOENT' ? 'qodercn_cli_not_found' : 'qodercn_cli_error';
+      const code = error.code === 'ENOENT' ? 'cli_not_found' : 'cli_error';
       const message =
         error.code === 'ENOENT'
-          ? 'qoderclicn is not installed or not on PATH.'
-          : 'Failed to start Qoder CN CLI.';
+          ? `${backend.command} is not installed or not on PATH.`
+          : `Failed to start ${backend.command}.`;
       finish(reject, new AppError(502, code, message));
     });
 
@@ -471,14 +505,14 @@ function runQoderCnCli({
     child.on('close', (code) => {
       if (settled) return;
       if (timedOut) {
-        finish(reject, new AppError(504, 'upstream_timeout', 'Qoder CN CLI request timed out.'));
+        finish(reject, new AppError(504, 'upstream_timeout', `${backend.command} request timed out.`));
         return;
       }
       if (code !== 0) {
         const stderr = Buffer.concat(stderrChunks).toString('utf8');
         const detail = redactString(stderr).trim();
         const suffix = detail ? ` ${detail.slice(0, 240)}` : '';
-        finish(reject, new AppError(502, 'upstream_error', `Qoder CN CLI failed.${suffix}`));
+        finish(reject, new AppError(502, 'upstream_error', `${backend.command} failed.${suffix}`));
         return;
       }
 
@@ -529,12 +563,13 @@ function runQoderCnCliStream({
   rootDir = process.cwd(),
   onDelta,
 }) {
-  const token = process.env.QODERCN_PERSONAL_ACCESS_TOKEN;
+  const backend = getCliBackend();
+  const token = process.env[backend.tokenEnvVar];
   if (!token) {
     throw new AppError(
       401,
-      'qodercn_token_missing',
-      'QODERCN_PERSONAL_ACCESS_TOKEN is not configured.',
+      'cli_token_missing',
+      `${backend.tokenEnvVar} is not configured. Set it in .env or run \`${backend.command} login\` first.`,
       'authentication_error'
     );
   }
@@ -546,7 +581,7 @@ function runQoderCnCliStream({
     .filter(Boolean)
     .join('\n\n');
 
-  const command = resolveCliCommand(process.env.QODERCN_CLI_PATH || 'qoderclicn');
+  const command = resolveCliCommand(process.env.CLI_COMMAND || process.env.QODERCN_CLI_PATH || backend.command);
   const modelRoute = resolveModelRoute(model);
   const cliModel = modelRoute.cliModel;
   const prompt = buildPrompt(nonSystemMessages, tools);
@@ -565,7 +600,7 @@ function runQoderCnCliStream({
     appendSystemPrompt: appendSystemPrompt || undefined,
     stream: true,
   });
-  const spawnSpec = buildSpawnCommand(command, args);
+  const spawnSpec = buildSpawnCommand(command, args, backend);
   const finalArgs = fixLongAppendSystemPrompt(spawnSpec.args, attachmentPath, spawnSpec.command);
 
   return new Promise((resolve, reject) => {
@@ -579,7 +614,7 @@ function runQoderCnCliStream({
 
     const child = spawn(spawnSpec.command, finalArgs, {
       cwd: rootDir,
-      env: buildChildEnv(rootDir, token),
+      env: buildChildEnv(rootDir, token, backend),
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -610,11 +645,11 @@ function runQoderCnCliStream({
     signal?.addEventListener?.('abort', onAbort, { once: true });
 
     child.on('error', (error) => {
-      const code = error.code === 'ENOENT' ? 'qodercn_cli_not_found' : 'qodercn_cli_error';
+      const code = error.code === 'ENOENT' ? 'cli_not_found' : 'cli_error';
       const message =
         error.code === 'ENOENT'
-          ? 'qoderclicn is not installed or not on PATH.'
-          : 'Failed to start Qoder CN CLI.';
+          ? `${backend.command} is not installed or not on PATH.`
+          : `Failed to start ${backend.command}.`;
       finish(reject, new AppError(502, code, message));
     });
 
@@ -622,7 +657,7 @@ function runQoderCnCliStream({
       try {
         const nextBytes = stdoutBytes + chunk.length;
         if (nextBytes > MAX_OUTPUT_BYTES) {
-          throw new AppError(502, 'upstream_output_too_large', 'Qoder CN CLI output exceeded the limit.');
+          throw new AppError(502, 'upstream_output_too_large', `${backend.command} output exceeded the limit.`);
         }
         stdoutBytes = nextBytes;
       } catch (error) {
@@ -678,14 +713,14 @@ function runQoderCnCliStream({
 
       if (settled) return;
       if (timedOut) {
-        finish(reject, new AppError(504, 'upstream_timeout', 'Qoder CN CLI request timed out.'));
+        finish(reject, new AppError(504, 'upstream_timeout', `${backend.command} request timed out.`));
         return;
       }
       if (code !== 0) {
         const stderr = Buffer.concat(stderrChunks).toString('utf8');
         const detail = redactString(stderr).trim();
         const suffix = detail ? ` ${detail.slice(0, 240)}` : '';
-        finish(reject, new AppError(502, 'upstream_error', `Qoder CN CLI failed.${suffix}`));
+        finish(reject, new AppError(502, 'upstream_error', `${backend.command} failed.${suffix}`));
         return;
       }
 
@@ -703,6 +738,7 @@ module.exports = {
   extractAssistantContent,
   extractStreamDelta,
   fixLongAppendSystemPrompt,
+  getCliBackend,
   normalizeMessages,
   resolveCliCommand,
   runQoderCnCli,

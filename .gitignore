@@ -7,3 +7,4 @@ node_modules/
 /server.js
 MAINTENANCE_LOCAL.md
 usage.json
+.qoder/

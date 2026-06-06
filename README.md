@@ -14,13 +14,18 @@
 
 ## 项目定位
 
-本项目把 Qoder CN CLI (`qoderclicn`) 适配为仅供本机访问的 OpenAI / Anthropic 兼容 HTTP 接口，用于研究不同客户端协议、消息格式、流式响应和工具调用格式之间的差异。
+本项目把 Qoder CLI（`qoderclicn` 或 `qodercli`）适配为仅供本机访问的 OpenAI / Anthropic 兼容 HTTP 接口，用于研究不同客户端协议、消息格式、流式响应和工具调用格式之间的差异。
 
-它不是官方 API，不代表 Qoder 官方授权，也不提供任何账号、Token 或额度服务。所有请求都依赖使用者自行配置的个人 Qoder CN Personal Access Token。
+支持两个后端：
+
+- **CN 后端**：`qoderclicn`，对接 qoder.com.cn
+- **Global 后端**：`qodercli`，对接 qoder.com
+
+它不是官方 API，不代表 Qoder 官方授权，也不提供任何账号、Token 或额度服务。所有请求都依赖使用者自行配置的个人 Qoder 认证。
 
 ## 工作原理
 
-`qoderclicn` 是命令行工具，接受文本输入并返回文本输出。许多本地客户端或开发工具使用 OpenAI 或 Anthropic 格式的 HTTP API。本项目作为本地适配层：接收兼容格式请求，将其转换为 CLI 调用，再把 CLI 输出整理为兼容格式响应。
+`qoderclicn` 和 `qodercli` 都是命令行工具，接受文本输入并返回文本输出。许多本地客户端或开发工具使用 OpenAI 或 Anthropic 格式的 HTTP API。本项目作为本地适配层：接收兼容格式请求，将其转换为 CLI 调用，再把 CLI 输出整理为兼容格式响应。
 
 支持两种本地协议格式：
 
@@ -31,18 +36,23 @@
 
 ## 工具调用实现方式
 
-由于 `qoderclicn` 本身只处理文本，不具备原生工具调用通道，本项目采用 Prompt 格式指令 + 输出解析的方式实现工具调用适配：将工具定义作为格式说明加入请求上下文，再从模型文本输出中提取 JSON。
+由于 CLI 本身只处理文本，不具备原生工具调用通道，本项目采用 Prompt 格式指令 + 输出解析的方式实现工具调用适配：将工具定义作为格式说明加入请求上下文，再从模型文本输出中提取 JSON。
 
 这与直接调用 OpenAI、Anthropic、DeepSeek 等官方 API 不同。官方 API 通常提供原生 `tools` 参数通道；本项目只能做文本层面的协议模拟，因此不应把它视为等价替代。
 
 ## 安全边界
 
-- 认证仅使用环境变量 `QODERCN_PERSONAL_ACCESS_TOKEN`，不读取桌面客户端登录状态
 - 默认仅监听 `127.0.0.1`
 - 不建议也不支持作为公网服务、共享服务或商业 API 使用
 - 日志自动脱敏 token、cookie、Authorization 头等敏感信息
-- 不扫描 `%APPDATA%`、`%LOCALAPPDATA%` 或 `~/.qoderwork`
 - `.env`、token、日志均不纳入版本控制
+
+### 认证方式
+
+| 后端 | 认证方式 | 环境变量 |
+|------|--------|--------|
+| CN (`qoderclicn`) | Personal Access Token | `QODERCN_PERSONAL_ACCESS_TOKEN` |
+| Global (`qodercli`) | OAuth 登录（`qodercli login`） | 无需配置 |
 
 ## 禁止用途 / Abuse Policy
 
@@ -64,11 +74,21 @@
 
 ## 安装
 
-需要 Node.js 18+ 和 Qoder CN CLI：
+需要 Node.js 18+。
+
+**CN 后端**（必须）：
 
 ```bash
 npm install -g @qodercn-ai/qoderclicn
 qoderclicn --version
+```
+
+**Global 后端**（可选）：
+
+```bash
+npm install -g @qoder-ai/qodercli
+qodercli --version
+qodercli login   # 必须登录一次
 ```
 
 安装依赖并创建配置：
@@ -78,15 +98,19 @@ npm install
 Copy-Item .env.example .env
 ```
 
-编辑 `.env`，填入你个人账号创建的 Personal Access Token：
+编辑 `.env`，配置后端和认证：
 
 ```env
-QODERCN_PERSONAL_ACCESS_TOKEN=your-token-here
+# 选择后端: "cn" 或 "global"
+CLI_BACKEND=cn
+
+# CN 后端：填入你的 Personal Access Token
+QODERCN_PERSONAL_ACCESS_TOKEN=your-cn-token
+
+# Global 后端：运行 qodercli login 后无需配置令牌
 ```
 
-PAT 创建入口：https://qoder.com.cn/account/integrations
-
-可选官方邀请入口：https://qoder.com.cn/referral?referral_code=pex0n1GlDjFK4aT1BWpiCoSyEjDGD6GB
+CN 版 PAT 创建入口：https://qoder.com.cn/account/integrations
 
 创建后请妥善保存。不要将 `.env` 提交到 Git，也不要把 Token 填入第三方客户端或分享给他人。
 
@@ -105,6 +129,24 @@ http://127.0.0.1:3000
 ```
 
 如果你通过环境变量或代码改动手动设置 host，请保持 `127.0.0.1`。不要绑定 `0.0.0.0`，不要通过端口映射、反向代理、隧道或云服务器暴露给公网。
+
+## 双后端切换
+
+通过 `.env` 中的 `CLI_BACKEND` 切换后端：
+
+```env
+CLI_BACKEND=cn       # 使用 qoderclicn
+CLI_BACKEND=global   # 使用 qodercli
+```
+
+| 配置项 | CN 后端 | Global 后端 |
+|---------|--------|----------|
+| CLI 命令 | `qoderclicn` | `qodercli` |
+| 认证方式 | Personal Access Token | `qodercli login`（OAuth） |
+| 认证目录 | `~/.qoderworkcn` | `~/.qoder` |
+| 环境变量 | `QODERCN_PERSONAL_ACCESS_TOKEN` | 不需要（登录后自动认证） |
+
+切换后端后需重启代理服务生效。
 
 ## 支持的模型
 
@@ -167,7 +209,7 @@ $env:QODERCN_MAX_OUTPUT_TOKENS = "4096"
 
 ## 流式输出
 
-当客户端请求 `stream: true` 且不包含工具参数时，本项目使用 `qoderclicn --output-format stream-json` 进行增量流式输出，并以 SSE 事件转发给本地客户端。
+当客户端请求 `stream: true` 且不包含工具参数时，本项目使用 CLI 的 `--output-format stream-json` 进行增量流式输出，并以 SSE 事件转发给本地客户端。
 
 当请求包含工具参数时，流式请求会自动降级为非流式响应，因为工具调用解析需要完整 JSON 输出。
 
@@ -175,7 +217,7 @@ $env:QODERCN_MAX_OUTPUT_TOKENS = "4096"
 
 - 工具调用通过 Prompt 格式指令 + 文本解析实现，非模型原生能力
 - 工具调用响应不走流式，始终为完整 JSON 返回
-- 每次请求启动一个新的 `qoderclicn` 子进程
+- 每次请求启动一个新的 CLI 子进程
 - 如果模型输出非法 JSON 或拒绝使用工具格式，响应会降级为纯文本
 
 ## 快速验证

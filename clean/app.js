@@ -221,7 +221,15 @@ function createApp() {
   });
 
   app.get('/', (_req, res) => {
-    res.json({ ok: true, name: 'qoder-cn-proxy', mode: 'clean' });
+    const backend = qoderCli.getCliBackend();
+    res.json({
+      ok: true,
+      name: 'qoder-cn-proxy',
+      mode: 'clean',
+      cli_backend: backend.name,
+      cli_command: backend.command,
+      cli_home: backend.homeDir,
+    });
   });
 
   app.get('/v1/models', (_req, res) => {

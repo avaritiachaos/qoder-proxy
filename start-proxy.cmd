@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-echo Starting Qoder CN Proxy...
+echo Starting Qoder Proxy...
 echo   Project: %CD%
 echo.
 

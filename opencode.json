@@ -5,7 +5,7 @@
   "provider": {
     "qoder-cn-local": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "Qoder CN Local",
+      "name": "Qoder Local",
       "options": {
         "baseURL": "http://127.0.0.1:3000/v1",
         "apiKey": "not-used"

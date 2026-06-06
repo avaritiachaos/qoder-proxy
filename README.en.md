@@ -1,4 +1,4 @@
-# Qoder CN Proxy
+# Qoder Proxy
 
 ## Disclaimer
 

@@ -9,7 +9,7 @@ const app = createApp();
 
 app.listen(PORT, HOST, () => {
   const backend = getCliBackend();
-  log(`Qoder CN clean proxy listening on http://${HOST}:${PORT}`);
+  log(`Qoder Proxy listening on http://${HOST}:${PORT}`);
   log('CLI backend', {
     name: backend.name,
     command: backend.command,

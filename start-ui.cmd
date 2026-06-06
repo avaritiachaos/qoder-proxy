@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-echo Starting Qoder CN Proxy with Web Console...
+echo Starting Qoder Proxy with Web Console...
 echo.
 
 where npm.cmd >nul 2>nul
@@ -28,7 +28,7 @@ echo Web Console: http://127.0.0.1:3000/ui
 echo.
 
 :: Start server in background
-start "Qoder CN Proxy" cmd /c "npm.cmd start"
+start "Qoder Proxy" cmd /c "npm.cmd start"
 
 :: Wait for server to be ready
 echo Waiting for server...

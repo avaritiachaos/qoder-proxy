@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Smoke test for a running Qoder CN Proxy instance.
+ * Smoke test for a running Qoder Proxy instance.
  *
  * Usage:
  *   node scripts/smoke-test.js          # quick check: /health + /v1/models

@@ -224,7 +224,7 @@ function createApp() {
     const backend = qoderCli.getCliBackend();
     res.json({
       ok: true,
-      name: 'qoder-cn-proxy',
+      name: 'qoder-proxy',
       mode: 'clean',
       cli_backend: backend.name,
       cli_command: backend.command,

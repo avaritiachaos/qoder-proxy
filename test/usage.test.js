@@ -145,7 +145,7 @@ test('Static UI is served at /ui/', async () => {
     const res = await fetch(`${baseUrl}/ui/`);
     assert.equal(res.status, 200);
     const html = await res.text();
-    assert.match(html, /Qoder CN Proxy/);
+    assert.match(html, /Qoder Proxy/);
     assert.match(html, /<title>/);
   } finally {
     server.close();
@@ -158,7 +158,7 @@ test('/ui serves the web console', async () => {
     const res = await fetch(`${baseUrl}/ui`);
     assert.equal(res.status, 200);
     const html = await res.text();
-    assert.match(html, /Qoder CN Proxy/);
+    assert.match(html, /Qoder Proxy/);
   } finally {
     server.close();
   }

@@ -1,5 +1,5 @@
 {
-  "name": "qoder-cn-proxy",
+  "name": "qoder-proxy",
   "version": "1.3.0",
   "description": "Local OpenAI / Anthropic compatible proxy for Qoder CLI and Qoder CN CLI",
   "main": "clean/server.js",

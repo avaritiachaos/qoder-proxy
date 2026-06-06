@@ -118,14 +118,13 @@ function loadDashboard() {
   if (!container || container.dataset.loaded === '1') return;
   container.innerHTML = '<div class="loading">Loading...</div>';
 
-  Promise.all([fetch('/health'), fetch('/v1/models')])
-    .then(function (results) {
-      return Promise.all([results[0].json(), results[1].json()]);
-    })
+  Promise.all([fetch('/').then(function(r){return r.json()}), fetch('/health'), fetch('/v1/models')])
     .then(function (data) {
-      var health = data[0];
-      var models = data[1];
+      var info = data[0];
+      var models = data[2];
       var modelCount = models.data ? models.data.length : 0;
+
+      var backendName = info.cli_backend === 'global' ? 'Global (qodercli)' : 'CN (qoderclicn)';
 
       container.innerHTML =
         '<div class="stat-grid">' +
@@ -134,16 +133,16 @@ function loadDashboard() {
             '<div class="stat-value success"><span class="status-dot green"></span>Running</div>' +
           '</div>' +
           '<div class="glass stat-item">' +
-            '<div class="stat-label">Base URL</div>' +
-            '<div class="stat-value muted">127.0.0.1:3000</div>' +
+            '<div class="stat-label">CLI Backend</div>' +
+            '<div class="stat-value">' + escapeHtml(backendName) + '</div>' +
           '</div>' +
           '<div class="glass stat-item">' +
             '<div class="stat-label">Models</div>' +
             '<div class="stat-value">' + modelCount + '</div>' +
           '</div>' +
           '<div class="glass stat-item">' +
-            '<div class="stat-label">Security</div>' +
-            '<div class="stat-value muted">Auth: Disabled</div>' +
+            '<div class="stat-label">Base URL</div>' +
+            '<div class="stat-value muted">127.0.0.1:3000</div>' +
           '</div>' +
         '</div>' +
         '<div class="alert info">Local protocol adapter running. Access the Web UI at <code>http://127.0.0.1:3000/ui</code></div>';

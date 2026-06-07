@@ -23,6 +23,7 @@ const {
 } = require('./tool-parser');
 const path = require('path');
 const { trackRequest, getUsage, resetUsage, saveUsage, extractTextFromMessages } = require('./usage');
+const { executeToolCall } = require('./tools-executor');
 
 const MODEL_ID = DEFAULT_MODEL_ID;
 
@@ -341,45 +342,105 @@ function createApp() {
       }
 
       // Non-streaming path (or tool calls with stream=true → downgraded)
-      const content = await qoderCli.runQoderCnCli({
-        messages: req.body.messages,
-        model,
-        tools: normalizedTools,
-        reasoningEffort: requestOptions.reasoningEffort,
-        contextWindow: requestOptions.contextWindow,
-        maxOutputTokens: requestOptions.maxOutputTokens,
-        signal: controller.signal,
-      });
+      // Build working messages for potential tool-call loops
+      let workingMessages = [...req.body.messages];
+      let finalContent = '';
+      let finalParsedOutput = null;
+      let toolCallDepth = 0;
+      const MAX_TOOL_CALL_DEPTH = 10;
 
-      // Parse the output for tool calls if tools were provided
-      let parsedOutput = null;
-      if (normalizedTools) {
-        parsedOutput = parseToolCallOutput(content);
-        if (parsedOutput && parsedOutput.type === 'tool_calls') {
-          log('chat tool calls detected', {
-            tool_count: parsedOutput.toolCalls.length,
-            tools: parsedOutput.toolCalls.map((t) => t.name),
-          });
-        } else {
-          log('chat no tool calls detected', { response_type: parsedOutput?.type || 'text' });
+      while (toolCallDepth < MAX_TOOL_CALL_DEPTH) {
+        const content = await qoderCli.runQoderCnCli({
+          messages: workingMessages,
+          model,
+          tools: normalizedTools,
+          reasoningEffort: requestOptions.reasoningEffort,
+          contextWindow: requestOptions.contextWindow,
+          maxOutputTokens: requestOptions.maxOutputTokens,
+          signal: controller.signal,
+        });
+
+        finalContent = content;
+
+        // Parse the output for tool calls if tools were provided
+        let parsedOutput = null;
+        if (normalizedTools) {
+          parsedOutput = parseToolCallOutput(content);
+          if (parsedOutput && parsedOutput.type === 'tool_calls') {
+            log('chat tool calls detected', {
+              tool_count: parsedOutput.toolCalls.length,
+              tools: parsedOutput.toolCalls.map((t) => t.name),
+            });
+          } else {
+            log('chat no tool calls detected', { response_type: parsedOutput?.type || 'text' });
+          }
         }
+
+        finalParsedOutput = parsedOutput;
+
+        // If no tool calls, we're done
+        if (!parsedOutput || parsedOutput.type !== 'tool_calls') {
+          break;
+        }
+
+        // Execute tool calls and build tool result messages
+        const toolResults = [];
+        const assistantToolCalls = [];
+
+        for (const toolCall of parsedOutput.toolCalls) {
+          const callId = generateCallId('call_');
+          assistantToolCalls.push({
+            id: callId,
+            type: 'function',
+            function: {
+              name: toolCall.name,
+              arguments: JSON.stringify(toolCall.arguments || {}),
+            },
+          });
+
+          log('executing tool', { name: toolCall.name, arguments: toolCall.arguments });
+          const result = await executeToolCall(toolCall);
+          log('tool result', { name: toolCall.name, result });
+
+          toolResults.push({
+            role: 'tool',
+            tool_call_id: callId,
+            content: JSON.stringify(result),
+          });
+        }
+
+        // Add assistant message with tool_calls
+        workingMessages.push({
+          role: 'assistant',
+          content: parsedOutput.prefixText || null,
+          tool_calls: assistantToolCalls,
+        });
+
+        // Add tool result messages
+        workingMessages.push(...toolResults);
+
+        toolCallDepth++;
+      }
+
+      if (toolCallDepth >= MAX_TOOL_CALL_DEPTH) {
+        log('warning: max tool call depth reached', { depth: MAX_TOOL_CALL_DEPTH });
       }
 
       if (req.body.stream) {
         // Tool calls are not streamed — downgrade to non-streaming response
-        if (parsedOutput && parsedOutput.type === 'tool_calls') {
-          res.json(createChatCompletion({ model, content, parsedOutput }));
+        if (finalParsedOutput && finalParsedOutput.type === 'tool_calls') {
+          res.json(createChatCompletion({ model, content: finalContent, parsedOutput: finalParsedOutput }));
         } else {
-          writeChatCompletionStream(res, { model, content });
+          writeChatCompletionStream(res, { model, content: finalContent });
         }
       } else {
-        res.json(createChatCompletion({ model, content, parsedOutput }));
+        res.json(createChatCompletion({ model, content: finalContent, parsedOutput: finalParsedOutput }));
       }
-      log('chat request completed', { duration_ms: Date.now() - started });
+      log('chat request completed', { duration_ms: Date.now() - started, tool_call_depth: toolCallDepth });
       trackRequest({
         model,
         inputText: extractTextFromMessages(req.body.messages),
-        outputText: content || '',
+        outputText: finalContent || '',
         isError: false,
       });
     } catch (error) {
@@ -498,45 +559,105 @@ function createApp() {
       }
 
       // Non-streaming path (or tool calls with stream=true → downgraded)
-      const content = await qoderCli.runQoderCnCli({
-        messages,
-        model,
-        tools,
-        reasoningEffort: requestOptions.reasoningEffort,
-        contextWindow: requestOptions.contextWindow,
-        maxOutputTokens: requestOptions.maxOutputTokens || req.body.max_tokens,
-        signal: controller.signal,
-      });
+      // Build working messages for potential tool-call loops
+      let workingMessagesAnthropic = [...messages];
+      let anthropicContent = '';
+      let anthropicParsedOutput = null;
+      let anthropicToolDepth = 0;
+      const MAX_ANTHROPIC_TOOL_DEPTH = 10;
 
-      // Parse the output for tool calls if tools were provided
-      let parsedOutput = null;
-      if (tools) {
-        parsedOutput = parseToolCallOutput(content);
-        if (parsedOutput && parsedOutput.type === 'tool_calls') {
-          log('anthropic tool calls detected', {
-            tool_count: parsedOutput.toolCalls.length,
-            tools: parsedOutput.toolCalls.map((t) => t.name),
-          });
-        } else {
-          log('anthropic no tool calls detected', { response_type: parsedOutput?.type || 'text' });
+      while (anthropicToolDepth < MAX_ANTHROPIC_TOOL_DEPTH) {
+        const content = await qoderCli.runQoderCnCli({
+          messages: workingMessagesAnthropic,
+          model,
+          tools,
+          reasoningEffort: requestOptions.reasoningEffort,
+          contextWindow: requestOptions.contextWindow,
+          maxOutputTokens: requestOptions.maxOutputTokens || req.body.max_tokens,
+          signal: controller.signal,
+        });
+
+        anthropicContent = content;
+
+        // Parse the output for tool calls if tools were provided
+        let parsedOutput = null;
+        if (tools) {
+          parsedOutput = parseToolCallOutput(content);
+          if (parsedOutput && parsedOutput.type === 'tool_calls') {
+            log('anthropic tool calls detected', {
+              tool_count: parsedOutput.toolCalls.length,
+              tools: parsedOutput.toolCalls.map((t) => t.name),
+            });
+          } else {
+            log('anthropic no tool calls detected', { response_type: parsedOutput?.type || 'text' });
+          }
         }
+
+        anthropicParsedOutput = parsedOutput;
+
+        // If no tool calls, we're done
+        if (!parsedOutput || parsedOutput.type !== 'tool_calls') {
+          break;
+        }
+
+        // Execute tool calls and build tool result messages
+        const toolResults = [];
+        const assistantToolCalls = [];
+
+        for (const toolCall of parsedOutput.toolCalls) {
+          const callId = generateCallId('call_');
+          assistantToolCalls.push({
+            id: callId,
+            type: 'function',
+            function: {
+              name: toolCall.name,
+              arguments: JSON.stringify(toolCall.arguments || {}),
+            },
+          });
+
+          log('executing anthropic tool', { name: toolCall.name, arguments: toolCall.arguments });
+          const result = await executeToolCall(toolCall);
+          log('anthropic tool result', { name: toolCall.name, result });
+
+          toolResults.push({
+            role: 'tool',
+            tool_call_id: callId,
+            content: JSON.stringify(result),
+          });
+        }
+
+        // Add assistant message with tool_calls
+        workingMessagesAnthropic.push({
+          role: 'assistant',
+          content: parsedOutput.prefixText || null,
+          tool_calls: assistantToolCalls,
+        });
+
+        // Add tool result messages
+        workingMessagesAnthropic.push(...toolResults);
+
+        anthropicToolDepth++;
+      }
+
+      if (anthropicToolDepth >= MAX_ANTHROPIC_TOOL_DEPTH) {
+        log('warning: max anthropic tool call depth reached', { depth: MAX_ANTHROPIC_TOOL_DEPTH });
       }
 
       if (req.body.stream) {
         // Tool calls are not streamed — downgrade to non-streaming response
-        if (parsedOutput && parsedOutput.type === 'tool_calls') {
-          res.json(createAnthropicMessage({ model, content, parsedOutput }));
+        if (anthropicParsedOutput && anthropicParsedOutput.type === 'tool_calls') {
+          res.json(createAnthropicMessage({ model, content: anthropicContent, parsedOutput: anthropicParsedOutput }));
         } else {
-          writeAnthropicMessageStream(res, { model, content });
+          writeAnthropicMessageStream(res, { model, content: anthropicContent });
         }
       } else {
-        res.json(createAnthropicMessage({ model, content, parsedOutput }));
+        res.json(createAnthropicMessage({ model, content: anthropicContent, parsedOutput: anthropicParsedOutput }));
       }
-      log('anthropic message request completed', { duration_ms: Date.now() - started });
+      log('anthropic message request completed', { duration_ms: Date.now() - started, tool_call_depth: anthropicToolDepth });
       trackRequest({
         model,
         inputText: extractTextFromMessages(req.body.messages),
-        outputText: content || '',
+        outputText: anthropicContent || '',
         isError: false,
       });
     } catch (error) {

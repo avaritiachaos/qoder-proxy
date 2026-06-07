@@ -253,6 +253,7 @@ function buildCliArgs({
     stream ? 'stream-json' : 'json',
     '--model',
     model,
+    '--dangerously-skip-permissions',
   ];
 
   if (attachmentPath) {

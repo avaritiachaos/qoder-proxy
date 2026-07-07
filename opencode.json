@@ -57,8 +57,8 @@
           "name": "Qwen3.7-Max max",
           "reasoning": true
         },
-        "glm-5.1": {
-          "name": "GLM-5.1",
+        "glm-5.2": {
+          "name": "GLM-5.2",
           "reasoning": true,
           "variants": {
             "low": { "reasoningEffort": "low" },
@@ -67,8 +67,8 @@
             "max": { "reasoningEffort": "max" }
           }
         },
-        "kimi-k2.6": {
-          "name": "Kimi-K2.6",
+        "kimi-k2.7-code": {
+          "name": "Kimi-K2.7-Code",
           "reasoning": true,
           "variants": {
             "low": { "reasoningEffort": "low" },

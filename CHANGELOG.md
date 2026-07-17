@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-07-17
+
+### Changed
+
+- **Model registry update**: `glm-5.1` → `glm-5.2` (`GLM-5.2`) and `kimi-k2.6` → `kimi-k2.7-code` (`Kimi-K2.7-Code`) to match current Qoder CLI model names.
+- Synchronized model keys in `opencode.json` and both Chinese/English READMEs.
+
 ## [1.4.0] - 2026-06-06
 
 ### Added

@@ -143,8 +143,10 @@ function writeAnthropicSse(res, event, payload) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
-function writeAnthropicMessageStream(res, { model, content }) {
+function writeAnthropicMessageStream(res, { model, content, parsedOutput }) {
   const id = `msg_${Date.now()}`;
+  const isToolCalls = parsedOutput && parsedOutput.type === 'tool_calls';
+
   res.status(200);
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -164,6 +166,64 @@ function writeAnthropicMessageStream(res, { model, content }) {
       usage: { input_tokens: 0, output_tokens: 0 },
     },
   });
+
+  if (isToolCalls) {
+    let blockIndex = 0;
+
+    if (parsedOutput.prefixText) {
+      writeAnthropicSse(res, 'content_block_start', {
+        type: 'content_block_start',
+        index: blockIndex,
+        content_block: { type: 'text', text: '' },
+      });
+      writeAnthropicSse(res, 'content_block_delta', {
+        type: 'content_block_delta',
+        index: blockIndex,
+        delta: { type: 'text_delta', text: parsedOutput.prefixText },
+      });
+      writeAnthropicSse(res, 'content_block_stop', {
+        type: 'content_block_stop',
+        index: blockIndex,
+      });
+      blockIndex += 1;
+    }
+
+    for (const call of parsedOutput.toolCalls) {
+      writeAnthropicSse(res, 'content_block_start', {
+        type: 'content_block_start',
+        index: blockIndex,
+        content_block: {
+          type: 'tool_use',
+          id: generateCallId('toolu_'),
+          name: call.name,
+          input: {},
+        },
+      });
+      writeAnthropicSse(res, 'content_block_delta', {
+        type: 'content_block_delta',
+        index: blockIndex,
+        delta: {
+          type: 'input_json_delta',
+          partial_json: JSON.stringify(call.arguments || {}),
+        },
+      });
+      writeAnthropicSse(res, 'content_block_stop', {
+        type: 'content_block_stop',
+        index: blockIndex,
+      });
+      blockIndex += 1;
+    }
+
+    writeAnthropicSse(res, 'message_delta', {
+      type: 'message_delta',
+      delta: { stop_reason: 'tool_use', stop_sequence: null },
+      usage: { output_tokens: 0 },
+    });
+    writeAnthropicSse(res, 'message_stop', { type: 'message_stop' });
+    res.end();
+    return;
+  }
+
   writeAnthropicSse(res, 'content_block_start', {
     type: 'content_block_start',
     index: 0,

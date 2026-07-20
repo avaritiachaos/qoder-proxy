@@ -46,6 +46,12 @@ function getCliBackend() {
   };
 }
 
+// OpenAI's `developer` role is the successor of `system` — treat both as
+// system-level instructions routed through --append-system-prompt.
+function isSystemRole(role) {
+  return role === 'system' || role === 'developer';
+}
+
 function normalizeContent(content) {
   if (content == null) return '';
   if (typeof content === 'string') return content;
@@ -344,9 +350,12 @@ function resolveCliCommand(command, env = process.env) {
 }
 
 /**
- * Windows command line has a ~32,767 character limit (CreateProcessW).
- * When --append-system-prompt is too long, prepend it to the attachment
- * file and remove it from CLI args to avoid spawn ENAMETOOLONG.
+ * Windows command line has a ~32,767 character limit (CreateProcessW),
+ * and the cmd.exe fallback path is far tighter: cmd.exe truncates a single
+ * command line at 8,191 characters. Agent clients routinely send system
+ * prompts of 5-20k characters, which lands exactly in that gap.
+ * When --append-system-prompt is too long for the spawn target, prepend it
+ * to the attachment file and remove it from CLI args instead.
  */
 function fixLongAppendSystemPrompt(args, attachmentPath, command) {
   if (process.platform !== 'win32' || !attachmentPath) return args;
@@ -359,7 +368,9 @@ function fixLongAppendSystemPrompt(args, attachmentPath, command) {
 
   // Rough estimate: include command name and a safety margin
   const totalLength = (command?.length || 10) + args.reduce((acc, s) => acc + s.length + 1, 0);
-  if (totalLength < 30000) return args;
+  const isCmdShell = /cmd(\.exe)?$/i.test(command || '');
+  const limit = isCmdShell ? 7500 : 30000;
+  if (totalLength < limit) return args;
 
   try {
     const original = fs.readFileSync(attachmentPath, 'utf8');
@@ -407,8 +418,8 @@ function runQoderCnCli({
   }
 
   // Extract system messages for --append-system-prompt
-  const systemMessages = messages.filter((m) => m.role === 'system');
-  const nonSystemMessages = messages.filter((m) => m.role !== 'system');
+  const systemMessages = messages.filter((m) => isSystemRole(m.role));
+  const nonSystemMessages = messages.filter((m) => !isSystemRole(m.role));
   const appendSystemPrompt = systemMessages
     .map((m) => normalizeContent(m.content))
     .filter(Boolean)
@@ -575,8 +586,8 @@ function runQoderCnCliStream({
     );
   }
 
-  const systemMessages = messages.filter((m) => m.role === 'system');
-  const nonSystemMessages = messages.filter((m) => m.role !== 'system');
+  const systemMessages = messages.filter((m) => isSystemRole(m.role));
+  const nonSystemMessages = messages.filter((m) => !isSystemRole(m.role));
   const appendSystemPrompt = systemMessages
     .map((m) => normalizeContent(m.content))
     .filter(Boolean)
@@ -612,6 +623,9 @@ function runQoderCnCliStream({
     let timedOut = false;
     let lineBuffer = '';
     const fullTextParts = [];
+    // Keep parsed records so we can fall back to a final `result`-style
+    // record when no assistant deltas were recognized during streaming.
+    const parsedRecords = [];
 
     const child = spawn(spawnSpec.command, finalArgs, {
       cwd: rootDir,
@@ -677,6 +691,7 @@ function runQoderCnCliStream({
 
         try {
           const record = JSON.parse(trimmed);
+          parsedRecords.push(record);
           const delta = extractStreamDelta(record);
           if (delta) {
             fullTextParts.push(delta);
@@ -702,6 +717,7 @@ function runQoderCnCliStream({
       if (lineBuffer.trim()) {
         try {
           const record = JSON.parse(lineBuffer.trim());
+          parsedRecords.push(record);
           const delta = extractStreamDelta(record);
           if (delta) {
             fullTextParts.push(delta);
@@ -723,6 +739,25 @@ function runQoderCnCliStream({
         const suffix = detail ? ` ${detail.slice(0, 240)}` : '';
         finish(reject, new AppError(502, 'upstream_error', `${backend.command} failed.${suffix}`));
         return;
+      }
+
+      // Fallback: no assistant deltas recognized, but the CLI exited cleanly.
+      // Pull the final text out of the last meaningful record (e.g. a
+      // `type: "result"` summary) so streaming clients don't get an empty
+      // message while non-streaming requests would have succeeded.
+      if (!fullTextParts.length && parsedRecords.length) {
+        for (let i = parsedRecords.length - 1; i >= 0; i -= 1) {
+          const text = extractText(parsedRecords[i]).trim();
+          if (text) {
+            fullTextParts.push(text);
+            try {
+              onDelta(text);
+            } catch (_) {
+              // Client connection may already be gone — still resolve.
+            }
+            break;
+          }
+        }
       }
 
       finish(resolve, fullTextParts.join(''));

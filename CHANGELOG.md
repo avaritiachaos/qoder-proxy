@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-07-20
+
+### Fixed
+
+- **Empty responses in agent clients (OpenCode, Trae, …)** ([#8]): streaming requests that declare `tools` are now buffered, parsed, and returned as structured tool calls — OpenAI `delta.tool_calls` chunks with `finish_reason: "tool_calls"`, Anthropic `tool_use` content blocks with `input_json_delta` and `stop_reason: "tool_use"`. Previously (since 1.3.0) the raw tool-call JSON was streamed as plain text, which agent clients could not interpret and rendered as an empty message.
+- **Silent stream failures**: when the CLI fails mid-stream, the proxy now emits an SSE error payload (OpenAI: `data: {"error": …}`; Anthropic: `event: error`) instead of silently ending the stream with no content.
+- **Empty streams from unrecognized CLI output**: if `stream-json` output yields no recognizable assistant deltas, the final text is now extracted from the last meaningful record (e.g. a `result` record) as a fallback, matching non-streaming behavior.
+- **Windows cmd.exe argument limit**: when the CLI is spawned through the `cmd.exe` fallback, `--append-system-prompt` is moved into the attachment file above ~7.5k characters (cmd.exe truncates command lines at 8,191 chars; the previous 30k threshold only guarded the CreateProcess limit). Long agent system prompts no longer break the spawn.
+
+### Changed
+
+- **Server-side tool execution is now opt-in** (`SERVER_TOOL_EXECUTION=1`): by default, tool calls are returned to the client for execution, which is what agent clients expect — they run tools in their own workspace. The previous default executed tools inside the proxy process and never surfaced `tool_calls` to the client.
+- The OpenAI-compatible endpoint now accepts the `developer` role and routes it as a system message.
+
 ## [1.4.1] - 2026-07-17
 
 ### Changed

@@ -27,6 +27,13 @@ const { executeToolCall } = require('./tools-executor');
 
 const MODEL_ID = DEFAULT_MODEL_ID;
 
+// Server-side tool execution is opt-in. Agent clients (OpenCode, Trae, Cline…)
+// declare tools they execute themselves in the user's workspace, so the proxy
+// must return tool_calls to the client instead of running them locally.
+function isServerToolExecutionEnabled() {
+  return /^(1|true|yes)$/i.test(process.env.SERVER_TOOL_EXECUTION || '');
+}
+
 function validateChatRequest(body) {
   if (!body || typeof body !== 'object') {
     throw new AppError(400, 'invalid_request', 'Request body must be a JSON object.');
@@ -38,8 +45,8 @@ function validateChatRequest(body) {
     if (!message || typeof message !== 'object') {
       throw new AppError(400, 'invalid_messages', 'Each message must be an object.');
     }
-    // Allow system, user, assistant, and tool roles for multi-turn tool use
-    if (!['system', 'user', 'assistant', 'tool'].includes(message.role)) {
+    // Allow system, developer, user, assistant, and tool roles for multi-turn tool use
+    if (!['system', 'developer', 'user', 'assistant', 'tool'].includes(message.role)) {
       throw new AppError(400, 'unsupported_role', `Unsupported message role: ${message.role}`);
     }
   }
@@ -154,9 +161,10 @@ function writeSse(res, payload) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
-function writeChatCompletionStream(res, { model, content }) {
+function writeChatCompletionStream(res, { model, content, parsedOutput }) {
   const id = `chatcmpl-${Date.now()}`;
   const created = Math.floor(Date.now() / 1000);
+  const isToolCalls = parsedOutput && parsedOutput.type === 'tool_calls';
 
   res.status(200);
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -178,7 +186,47 @@ function writeChatCompletionStream(res, { model, content }) {
     ],
   });
 
-  if (content) {
+  if (isToolCalls) {
+    if (parsedOutput.prefixText) {
+      writeSse(res, {
+        id,
+        object: 'chat.completion.chunk',
+        created,
+        model,
+        choices: [
+          {
+            index: 0,
+            delta: { content: parsedOutput.prefixText },
+            finish_reason: null,
+          },
+        ],
+      });
+    }
+    writeSse(res, {
+      id,
+      object: 'chat.completion.chunk',
+      created,
+      model,
+      choices: [
+        {
+          index: 0,
+          delta: {
+            tool_calls: parsedOutput.toolCalls.map((call, index) => ({
+              index,
+              id: generateCallId('call_'),
+              type: 'function',
+              function: {
+                name: call.name,
+                // OpenAI spec: arguments is a JSON string, not a parsed object
+                arguments: JSON.stringify(call.arguments || {}),
+              },
+            })),
+          },
+          finish_reason: null,
+        },
+      ],
+    });
+  } else if (content) {
     writeSse(res, {
       id,
       object: 'chat.completion.chunk',
@@ -203,7 +251,7 @@ function writeChatCompletionStream(res, { model, content }) {
       {
         index: 0,
         delta: {},
-        finish_reason: 'stop',
+        finish_reason: isToolCalls ? 'tool_calls' : 'stop',
       },
     ],
   });
@@ -269,8 +317,11 @@ function createApp() {
         reasoning_effort: requestOptions.reasoningEffort,
       });
 
-      // True streaming: stream-json mode, real-time SSE forwarding
-      if (req.body.stream) {
+      // True streaming: stream-json mode, real-time SSE forwarding.
+      // Only when no tools are declared — with tools the model may emit a
+      // tool-call JSON block that must be parsed and returned as structured
+      // tool_calls, so those requests go through the buffered path below.
+      if (req.body.stream && !normalizedTools) {
         const id = `chatcmpl-${Date.now()}`;
         const created = Math.floor(Date.now() / 1000);
 
@@ -309,16 +360,27 @@ function createApp() {
             },
           });
         } catch (streamError) {
-          // If headers are already sent, we can only log and end the stream
-          if (!res.writableEnded) {
-            try { res.end(); } catch (_) { /* ignore */ }
-          }
           log('chat stream failed', {
             code: streamError.code || 'internal_error',
             status: streamError.status || 500,
             duration_ms: Date.now() - started,
             message: streamError.message,
           });
+          // Headers are already sent — surface the error as an SSE event so
+          // clients render a failure instead of a silent empty message.
+          if (!res.writableEnded) {
+            try {
+              writeSse(res, {
+                error: {
+                  message: streamError.message || 'Upstream request failed.',
+                  type: 'server_error',
+                  code: streamError.code || 'internal_error',
+                },
+              });
+              res.write('data: [DONE]\n\n');
+              res.end();
+            } catch (_) { /* ignore */ }
+          }
           return;
         }
 
@@ -383,6 +445,12 @@ function createApp() {
           break;
         }
 
+        // Default: hand tool_calls back to the client, which executes tools
+        // in its own workspace. Server-side execution only when opted in.
+        if (!isServerToolExecutionEnabled()) {
+          break;
+        }
+
         // Execute tool calls and build tool result messages
         const toolResults = [];
         const assistantToolCalls = [];
@@ -427,12 +495,9 @@ function createApp() {
       }
 
       if (req.body.stream) {
-        // Tool calls are not streamed — downgrade to non-streaming response
-        if (finalParsedOutput && finalParsedOutput.type === 'tool_calls') {
-          res.json(createChatCompletion({ model, content: finalContent, parsedOutput: finalParsedOutput }));
-        } else {
-          writeChatCompletionStream(res, { model, content: finalContent });
-        }
+        // Buffered request (tools declared) — emit the parsed result as a
+        // proper SSE stream, including delta.tool_calls when applicable.
+        writeChatCompletionStream(res, { model, content: finalContent, parsedOutput: finalParsedOutput });
       } else {
         res.json(createChatCompletion({ model, content: finalContent, parsedOutput: finalParsedOutput }));
       }
@@ -478,8 +543,11 @@ function createApp() {
         reasoning_effort: requestOptions.reasoningEffort,
       });
 
-      // True streaming: stream-json mode, real-time SSE forwarding
-      if (req.body.stream) {
+      // True streaming: stream-json mode, real-time SSE forwarding.
+      // Only when no tools are declared — with tools the model may emit a
+      // tool-call JSON block that must be parsed and returned as structured
+      // tool_use blocks, so those requests go through the buffered path below.
+      if (req.body.stream && !(tools && tools.length)) {
         const msgId = `msg_${Date.now()}`;
 
         res.status(200);
@@ -525,15 +593,26 @@ function createApp() {
             },
           });
         } catch (streamError) {
-          if (!res.writableEnded) {
-            try { res.end(); } catch (_) { /* ignore */ }
-          }
           log('anthropic stream failed', {
             code: streamError.code || 'internal_error',
             status: streamError.status || 500,
             duration_ms: Date.now() - started,
             message: streamError.message,
           });
+          // Headers are already sent — surface the error as an SSE error
+          // event so clients render a failure instead of an empty message.
+          if (!res.writableEnded) {
+            try {
+              writeAnthropicSse(res, 'error', {
+                type: 'error',
+                error: {
+                  type: 'api_error',
+                  message: streamError.message || 'Upstream request failed.',
+                },
+              });
+              res.end();
+            } catch (_) { /* ignore */ }
+          }
           return;
         }
 
@@ -600,6 +679,12 @@ function createApp() {
           break;
         }
 
+        // Default: hand tool_use blocks back to the client, which executes
+        // tools in its own workspace. Server-side execution only when opted in.
+        if (!isServerToolExecutionEnabled()) {
+          break;
+        }
+
         // Execute tool calls and build tool result messages
         const toolResults = [];
         const assistantToolCalls = [];
@@ -644,12 +729,9 @@ function createApp() {
       }
 
       if (req.body.stream) {
-        // Tool calls are not streamed — downgrade to non-streaming response
-        if (anthropicParsedOutput && anthropicParsedOutput.type === 'tool_calls') {
-          res.json(createAnthropicMessage({ model, content: anthropicContent, parsedOutput: anthropicParsedOutput }));
-        } else {
-          writeAnthropicMessageStream(res, { model, content: anthropicContent });
-        }
+        // Buffered request (tools declared) — emit the parsed result as a
+        // proper SSE stream, including tool_use blocks when applicable.
+        writeAnthropicMessageStream(res, { model, content: anthropicContent, parsedOutput: anthropicParsedOutput });
       } else {
         res.json(createAnthropicMessage({ model, content: anthropicContent, parsedOutput: anthropicParsedOutput }));
       }

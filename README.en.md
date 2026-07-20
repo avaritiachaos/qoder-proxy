@@ -132,9 +132,9 @@ If you manually change host behavior through environment variables or code edits
 
 ## Supported Models
 
-`qoder-cn`, `auto`, `qwen3.7-max`, `glm-5.2`, `kimi-k2.7-code`, `qwen3.6-plus`, `qwen3.6-flash`, `deepseek-v4-pro`, `deepseek-v4-flash`
+`qoder-cn`, `auto`, `qwen3.8-max-preview`, `qwen3.7-max`, `qwen3.7-plus`, `glm-5.2`, `kimi-k2.7-code`, `minimax-m2.7`, `qwen3.6-flash`, `deepseek-v4-pro`, `deepseek-v4-flash`
 
-Qwen3.7-Max reasoning effort aliases: `qwen3.7-max-effort-low`, `-medium`, `-high`, `-max`
+Reasoning effort aliases: `qwen3.8-max-preview-effort-low`, `-medium`, `-high`, `-max`, and `qwen3.7-max-effort-low`, `-medium`, `-high`, `-max`
 
 ## Local Client Adaptation
 

@@ -31,6 +31,32 @@
             "max": { "reasoningEffort": "max" }
           }
         },
+        "qwen3.8-max-preview": {
+          "name": "Qwen3.8-Max-Preview",
+          "reasoning": true,
+          "variants": {
+            "low": { "reasoningEffort": "low" },
+            "medium": { "reasoningEffort": "medium" },
+            "high": { "reasoningEffort": "high" },
+            "max": { "reasoningEffort": "max" }
+          }
+        },
+        "qwen3.8-max-preview-effort-low": {
+          "name": "Qwen3.8-Max-Preview low",
+          "reasoning": true
+        },
+        "qwen3.8-max-preview-effort-medium": {
+          "name": "Qwen3.8-Max-Preview medium",
+          "reasoning": true
+        },
+        "qwen3.8-max-preview-effort-high": {
+          "name": "Qwen3.8-Max-Preview high",
+          "reasoning": true
+        },
+        "qwen3.8-max-preview-effort-max": {
+          "name": "Qwen3.8-Max-Preview max",
+          "reasoning": true
+        },
         "qwen3.7-max": {
           "name": "Qwen3.7-Max",
           "reasoning": true,
@@ -77,8 +103,18 @@
             "max": { "reasoningEffort": "max" }
           }
         },
-        "qwen3.6-plus": {
-          "name": "Qwen3.6-Plus",
+        "qwen3.7-plus": {
+          "name": "Qwen3.7-Plus",
+          "reasoning": true,
+          "variants": {
+            "low": { "reasoningEffort": "low" },
+            "medium": { "reasoningEffort": "medium" },
+            "high": { "reasoningEffort": "high" },
+            "max": { "reasoningEffort": "max" }
+          }
+        },
+        "minimax-m2.7": {
+          "name": "MiniMax-M2.7",
           "reasoning": true,
           "variants": {
             "low": { "reasoningEffort": "low" },

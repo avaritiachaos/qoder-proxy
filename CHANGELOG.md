@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.4.2] - 2026-07-20
 
+### Added
+
+- **New models** ([#7]): `qwen3.8-max-preview` (`Qwen3.8-Max-Preview`, with effort aliases), `qwen3.7-plus` (`Qwen3.7-Plus`), and `minimax-m2.7` (`MiniMax-M2.7`), matching Qoder CLI CN 1.1.0. Removed `qwen3.6-plus`, which is no longer offered by the CLI. Note: the new models require Qoder CLI CN ≥ 1.1.0 (`qoderclicn update`).
+
 ### Fixed
 
 - **Empty responses in agent clients (OpenCode, Trae, …)** ([#8]): streaming requests that declare `tools` are now buffered, parsed, and returned as structured tool calls — OpenAI `delta.tool_calls` chunks with `finish_reason: "tool_calls"`, Anthropic `tool_use` content blocks with `input_json_delta` and `stop_reason: "tool_use"`. Previously (since 1.3.0) the raw tool-call JSON was streamed as plain text, which agent clients could not interpret and rendered as an empty message.

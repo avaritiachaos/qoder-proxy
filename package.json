@@ -1,17 +1,19 @@
 {
   "name": "qoder-proxy",
-  "version": "1.4.2",
+  "version": "1.5.0",
   "description": "Local OpenAI / Anthropic compatible proxy for Qoder CLI and Qoder CN CLI",
   "main": "clean/server.js",
   "files": [
     "clean/",
+    "public/",
     "scripts/",
     "test/",
     "opencode.json",
     "start-proxy.cmd",
+    "start-ui.cmd",
     "CHANGELOG.md",
     "README.md",
-    "README.zh-CN.md",
+    "README.en.md",
     "SECURITY.md",
     "LICENSE",
     ".env.example"

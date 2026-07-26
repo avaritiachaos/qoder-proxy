@@ -42,17 +42,54 @@
 
 ## 安全边界
 
-- 默认仅监听 `127.0.0.1`
+- 仅监听 `127.0.0.1`，且不提供改绑其他地址的选项
+- **浏览器跨源请求一律拒绝**（仅允许本机 loopback 来源）。否则你访问的任意网页都能在后台调用代理、消耗你的 Qoder 额度
+- **`Host` 头不是 loopback 的请求一律拒绝**，用于阻断 DNS rebinding
+- 设置 `PROXY_API_KEY` 后，`/v1/*` 与 `/usage/*` 强制校验密钥
 - 不建议也不支持作为公网服务、共享服务或商业 API 使用
 - 日志自动脱敏 token、cookie、Authorization 头等敏感信息
 - `.env`、token、日志均不纳入版本控制
 
-### 认证方式
+需要提醒的是：**不设置 `PROXY_API_KEY` 时，本机上任何进程都可以使用这个代理。** loopback 绑定挡的是外部网络，挡不住本机。建议设置一个。
+
+### 客户端认证（PROXY_API_KEY）
+
+在 `.env` 中设置后，客户端需要在请求头中携带：
+
+```text
+Authorization: Bearer <PROXY_API_KEY>
+```
+
+或者（Anthropic 系客户端习惯）：
+
+```text
+x-api-key: <PROXY_API_KEY>
+```
+
+留空则不校验密钥。`/health` 始终开放，便于脚本探活。
+
+如果你有本机 Web 应用需要从浏览器调用代理，用 `ALLOWED_ORIGINS` 显式放行；如果你确实要用别的主机名访问，用 `ALLOWED_HOSTS`。这两个开关默认为空——一旦使用，安全模型就需要你自己评估了。
+
+### 上游认证方式
 
 | 后端 | 认证方式 | 环境变量 |
 |------|--------|--------|
 | CN (`qoderclicn`) | Personal Access Token | `QODERCN_PERSONAL_ACCESS_TOKEN` |
 | Global (`qodercli`) | OAuth 登录（`qodercli login`） | 无需配置 |
+
+### 服务端工具执行（默认关闭）
+
+`SERVER_TOOL_EXECUTION=1` 会让代理在**你的机器上**执行模型返回的工具调用，而模型是被客户端发来的 prompt 引导的。除非你的客户端确实无法自己执行工具，否则请保持关闭。开启时：
+
+- 文件操作被限制在 `SERVER_TOOL_WORKSPACE`（默认为代理的工作目录），绝对路径和指向外部的符号链接都会被拒绝
+- `Bash` 工具额外需要 `SERVER_TOOL_ALLOW_BASH=1` **且** `SERVER_TOOL_BASH_ALLOWLIST` 非空；命令不经过 shell 执行，因此管道、串联、重定向、命令替换都会被拒绝
+- Windows 上因为不走 shell，无法执行 `.cmd`/`.bat` 包装（如 `npm`），只能执行真正的可执行文件（`node`、`git`、`python` 等）
+
+请把这个特性当作实验性功能，并且和 `PROXY_API_KEY` 一起使用。
+
+## 报告安全问题
+
+请不要在公开 issue 里报告漏洞，使用 GitHub 的私密报告入口：[Report a vulnerability](https://github.com/avaritiachaos/qoder-proxy/security/advisories/new)。详见 [SECURITY.md](SECURITY.md)。
 
 ## 禁止用途 / Abuse Policy
 
@@ -161,7 +198,7 @@ CLI_BACKEND=global   # 使用 qodercli
 适用于支持自定义 OpenAI 兼容接口的本地客户端：
 
 - Base URL：`http://127.0.0.1:3000/v1`
-- API Key：填写本地占位值即可，例如 `not-used`
+- API Key：填写你在 `.env` 中设置的 `PROXY_API_KEY`；如果没设置，填任意占位值即可（例如 `not-used`）
 - Model：从 `/v1/models` 返回列表选择，或手动输入模型 ID
 
 注意：不要将 Qoder CN Token 填入客户端。Token 只应保存在本项目本机 `.env` 中。
@@ -172,7 +209,7 @@ CLI_BACKEND=global   # 使用 qodercli
 
 ```powershell
 $env:ANTHROPIC_BASE_URL = "http://127.0.0.1:3000"
-$env:ANTHROPIC_AUTH_TOKEN = "not-used"
+$env:ANTHROPIC_AUTH_TOKEN = "your-PROXY_API_KEY"   # 未设置 PROXY_API_KEY 时填任意值
 ```
 
 `ANTHROPIC_BASE_URL` 不要追加 `/v1`，客户端通常会自动拼接 API 路径。
@@ -185,15 +222,21 @@ $env:ANTHROPIC_AUTH_TOKEN = "not-used"
 opencode run --model qoder-cn-local/qwen3.7-max --variant high "reply OK"
 ```
 
+如果你设置了 `PROXY_API_KEY`，需要把 `opencode.json` 里 `options.apiKey` 的 `not-used` 换成你的密钥。
+
 ## API 端点
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/health` | 健康检查 |
-| GET | `/v1/models` | 模型列表 |
-| POST | `/v1/chat/completions` | OpenAI 兼容格式对话，支持 tools 字段适配 |
-| POST | `/v1/messages` | Anthropic 兼容格式对话，支持 tool_use 字段适配 |
-| POST | `/v1/messages/count_tokens` | Token 估算 |
+设置了 `PROXY_API_KEY` 的话，`/v1/*` 与 `/usage/*` 都需要携带密钥；`/health` 不需要。
+
+| 方法 | 路径 | 需要密钥 | 说明 |
+|------|------|------|------|
+| GET | `/health` | 否 | 健康检查 |
+| GET | `/v1/models` | 是 | 模型列表 |
+| POST | `/v1/chat/completions` | 是 | OpenAI 兼容格式对话，支持 tools 字段适配 |
+| POST | `/v1/messages` | 是 | Anthropic 兼容格式对话，支持 tool_use 字段适配 |
+| POST | `/v1/messages/count_tokens` | 是 | Token 估算 |
+| GET | `/usage/local` | 是 | 本地用量估算 |
+| POST | `/usage/reset-local` | 是 | 重置本地用量统计 |
 
 ## 推理参数
 

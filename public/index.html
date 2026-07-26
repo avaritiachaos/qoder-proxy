@@ -116,6 +116,30 @@
           <p class="page-desc">配置客户端连接信息</p>
         </div>
         <div id="config-content">
+          <div class="glass card">
+            <div class="card-header">
+              <span class="card-icon">◬</span>
+              <h3>Proxy API Key</h3>
+            </div>
+            <p class="card-desc">
+              If you set <code>PROXY_API_KEY</code> in <code>.env</code>, enter it here so this
+              console can call the proxy. Stored in this browser only, never sent anywhere else.
+              Leave empty if you did not set one.
+            </p>
+            <div class="api-key-row">
+              <input
+                type="password"
+                id="api-key-input"
+                class="api-key-input"
+                placeholder="PROXY_API_KEY"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <button class="btn primary" id="api-key-save">Save</button>
+            </div>
+            <p id="api-key-status" class="api-key-status"></p>
+          </div>
+
           <div class="config-grid">
             <div class="glass card">
               <div class="card-header">
@@ -126,7 +150,7 @@
               <div class="code-block">
                 <pre><code id="config-openai">{
   "baseUrl": "http://127.0.0.1:3000/v1",
-  "apiKey": "not-used"
+  "apiKey": "your-PROXY_API_KEY"
 }</code></pre>
                 <button class="btn copy" data-target="config-openai">Copy</button>
               </div>
@@ -140,7 +164,7 @@
               <p class="card-desc">For clients that support custom Anthropic-compatible endpoints:</p>
               <div class="code-block">
                 <pre><code id="config-anthropic">ANTHROPIC_BASE_URL=http://127.0.0.1:3000
-ANTHROPIC_AUTH_TOKEN=not-used</code></pre>
+ANTHROPIC_AUTH_TOKEN=your-PROXY_API_KEY</code></pre>
                 <button class="btn copy" data-target="config-anthropic">Copy</button>
               </div>
             </div>

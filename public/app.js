@@ -96,16 +96,52 @@ function switchTab(tab) {
 
 // ─── API helpers ───────────────────────────────────────────────────────────────
 
+// The console is a browser client like any other, so when PROXY_API_KEY is set
+// it must present the key too. Kept in localStorage so it survives reloads.
+var API_KEY_STORAGE = 'qoder-proxy-api-key';
+
+function getApiKey() {
+  try {
+    return window.localStorage.getItem(API_KEY_STORAGE) || '';
+  } catch (_) {
+    return '';
+  }
+}
+
+function setApiKey(value) {
+  try {
+    if (value) {
+      window.localStorage.setItem(API_KEY_STORAGE, value);
+    } else {
+      window.localStorage.removeItem(API_KEY_STORAGE);
+    }
+  } catch (_) {
+    // Private browsing modes can refuse storage; the key just won't persist.
+  }
+}
+
 function api(path, options) {
-  var opts = Object.assign(
-    { headers: { 'Content-Type': 'application/json' } },
-    options || {}
-  );
-  return fetch(path, opts).then(function (res) {
+  var opts = options || {};
+  var headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+  var key = getApiKey();
+  if (key) {
+    headers['Authorization'] = 'Bearer ' + key;
+  }
+
+  return fetch(path, Object.assign({}, opts, { headers: headers })).then(function (res) {
     if (!res.ok) {
-      return res.json().then(function (body) {
-        throw new Error(body.error?.message || 'Request failed: ' + res.status);
-      });
+      return res
+        .json()
+        .catch(function () {
+          return {};
+        })
+        .then(function (body) {
+          var message = (body.error && body.error.message) || 'Request failed: ' + res.status;
+          if (res.status === 401) {
+            message = 'Unauthorized. Set the proxy API key in the Config tab.';
+          }
+          throw new Error(message);
+        });
     }
     return res.json();
   });
@@ -118,7 +154,7 @@ function loadDashboard() {
   if (!container || container.dataset.loaded === '1') return;
   container.innerHTML = '<div class="loading">Loading...</div>';
 
-  Promise.all([fetch('/').then(function(r){return r.json()}), fetch('/health'), fetch('/v1/models')])
+  Promise.all([api('/'), api('/health'), api('/v1/models')])
     .then(function (data) {
       var info = data[0];
       var models = data[2];
@@ -161,8 +197,7 @@ function loadModels() {
   if (!container || container.dataset.loaded === '1') return;
   container.innerHTML = '<div class="loading">Loading...</div>';
 
-  fetch('/v1/models')
-    .then(function (res) { return res.json(); })
+  api('/v1/models')
     .then(function (data) {
       if (!data.data || data.data.length === 0) {
         container.innerHTML = '<div class="alert info">No models found.</div>';
@@ -245,8 +280,7 @@ function initChat() {
   if (!sendBtn || !textarea) return;
 
   // Populate model dropdown
-  fetch('/v1/models')
-    .then(function (res) { return res.json(); })
+  api('/v1/models')
     .then(function (data) {
       if (!data.data || !modelSelect) return;
       data.data.forEach(function (m) {
@@ -322,6 +356,47 @@ function doChat() {
 
 // ─── Config ────────────────────────────────────────────────────────────────────
 
+function initApiKey() {
+  var input = document.getElementById('api-key-input');
+  var saveBtn = document.getElementById('api-key-save');
+  var status = document.getElementById('api-key-status');
+  if (!input || !saveBtn) return;
+
+  input.value = getApiKey();
+
+  function showStatus(text, kind) {
+    if (!status) return;
+    status.textContent = text;
+    status.className = 'api-key-status ' + (kind || '');
+  }
+
+  if (getApiKey()) {
+    showStatus('A key is saved in this browser.', 'ok');
+  }
+
+  saveBtn.addEventListener('click', function () {
+    var value = input.value.trim();
+    setApiKey(value);
+    showStatus(
+      value ? 'Key saved. Reloading console data…' : 'Key cleared.',
+      value ? 'ok' : ''
+    );
+    // Re-fetch every tab with the new credential.
+    ['dashboard-content', 'models-content', 'usage-content'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.dataset.loaded = '0';
+    });
+    loadDashboard();
+  });
+
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      saveBtn.click();
+    }
+  });
+}
+
 function initConfig() {
   document.querySelectorAll('.btn.copy').forEach(function (btn) {
     btn.addEventListener('click', function () {
@@ -347,8 +422,7 @@ function loadUsage() {
   if (!container || container.dataset.loaded === '1') return;
   container.innerHTML = '<div class="loading">Loading...</div>';
 
-  fetch('/usage/local')
-    .then(function (res) { return res.json(); })
+  api('/usage/local')
     .then(function (data) {
       var modelRows = '';
       if (data.requestsByModel && Object.keys(data.requestsByModel).length > 0) {
@@ -456,6 +530,7 @@ document.addEventListener('DOMContentLoaded', function () {
   initTabs();
   initChat();
   initConfig();
+  initApiKey();
 
   // Theme toggle
   var themeBtn = document.getElementById('theme-toggle');

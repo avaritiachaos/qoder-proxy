@@ -9,9 +9,15 @@
  *
  * The --full flag requires a running proxy with a valid QODERCN_PERSONAL_ACCESS_TOKEN
  * and will make real model calls that consume time and quota.
+ *
+ * PROXY_API_KEY is read from .env (or the environment) and sent automatically, so
+ * this keeps working once the proxy requires a key.
  */
 
+require('dotenv').config();
+
 const BASE_URL = process.env.SMOKE_BASE_URL || 'http://127.0.0.1:3000';
+const API_KEY = (process.env.SMOKE_API_KEY || process.env.PROXY_API_KEY || '').trim();
 const args = process.argv.slice(2);
 const fullMode = args.includes('--full');
 
@@ -19,11 +25,17 @@ let passed = 0;
 let failed = 0;
 let skipped = 0;
 
+function authHeaders(extra) {
+  const headers = Object.assign({ 'content-type': 'application/json' }, extra || {});
+  if (API_KEY) headers.authorization = `Bearer ${API_KEY}`;
+  return headers;
+}
+
 async function request(method, path, body) {
   const url = `${BASE_URL}${path}`;
   const opts = {
     method,
-    headers: { 'content-type': 'application/json' },
+    headers: authHeaders(),
   };
   if (body !== undefined) {
     opts.body = JSON.stringify(body);
@@ -73,6 +85,10 @@ async function testHealth() {
 
 async function testModels() {
   const { status, data } = await request('GET', '/v1/models');
+  assert(
+    status !== 401,
+    'Unauthorized. The proxy requires PROXY_API_KEY — set it in .env (or pass SMOKE_API_KEY).'
+  );
   assert(status === 200, `Expected status 200, got ${status}`);
   assert(data.object === 'list', `Expected object "list", got "${data.object}"`);
   assert(Array.isArray(data.data) && data.data.length > 0, 'Expected non-empty model list');
@@ -100,7 +116,7 @@ async function testChatCompletionsStream() {
   const url = `${BASE_URL}/v1/chat/completions`;
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({
       model: 'qoder-cn',
       stream: true,
@@ -137,7 +153,8 @@ async function testAnthropicMessages() {
 
 async function main() {
   console.log(`\nSmoke test: ${BASE_URL}`);
-  console.log(`Mode: ${fullMode ? 'full (includes model calls)' : 'quick (endpoints only)'}\n`);
+  console.log(`Mode: ${fullMode ? 'full (includes model calls)' : 'quick (endpoints only)'}`);
+  console.log(`API key: ${API_KEY ? 'sending one' : 'none configured'}\n`);
 
   try {
     await fetch(`${BASE_URL}/health`);

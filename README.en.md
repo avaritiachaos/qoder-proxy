@@ -42,17 +42,71 @@ This is different from calling official OpenAI, Anthropic, DeepSeek, or similar 
 
 ## Security Boundaries
 
-- Default host is `127.0.0.1`
+- Binds to `127.0.0.1` only, with no option to bind elsewhere
+- **Cross-origin browser requests are refused** (loopback origins only). Otherwise
+  any web page you visit could call the proxy in the background and spend your
+  Qoder quota
+- **Requests naming a non-loopback `Host` are refused**, which blocks DNS rebinding
+- With `PROXY_API_KEY` set, `/v1/*` and `/usage/*` require the key
 - Not intended or supported for public services, shared services, or commercial APIs
 - Logs redact tokens, cookies, Authorization headers, and other sensitive data
 - `.env`, tokens, and logs are excluded from version control
 
-### Authentication
+Worth stating plainly: **without `PROXY_API_KEY`, any process on your machine can
+use the proxy.** Loopback binding keeps out the network, not your own machine.
+Setting a key is recommended.
+
+### Client Authentication (PROXY_API_KEY)
+
+Once set in `.env`, clients must send the key as:
+
+```text
+Authorization: Bearer <PROXY_API_KEY>
+```
+
+or, as Anthropic-style clients prefer:
+
+```text
+x-api-key: <PROXY_API_KEY>
+```
+
+Leave it empty to require no key. `/health` is always open so scripts can probe
+liveness.
+
+If a local web app legitimately needs browser access, allow it explicitly with
+`ALLOWED_ORIGINS`; if you deliberately reach the proxy under another hostname,
+use `ALLOWED_HOSTS`. Both default to empty — once you use them, reviewing the
+security model becomes your job.
+
+### Upstream Authentication
 
 | Backend | Auth Method | Environment Variable |
 |---------|------------|--------------------|
 | CN (`qoderclicn`) | Personal Access Token | `QODERCN_PERSONAL_ACCESS_TOKEN` |
 | Global (`qodercli`) | OAuth login (`qodercli login`) | Not required |
+
+### Server-Side Tool Execution (off by default)
+
+`SERVER_TOOL_EXECUTION=1` makes the proxy run the model's tool calls **on your
+machine**, and the model is steered by whatever prompt the client sent. Keep it
+off unless your client genuinely cannot execute tools itself. When enabled:
+
+- File operations are confined to `SERVER_TOOL_WORKSPACE` (default: the proxy's
+  working directory). Absolute paths and symlinks leaving it are refused
+- The `Bash` tool additionally requires `SERVER_TOOL_ALLOW_BASH=1` **and** a
+  non-empty `SERVER_TOOL_BASH_ALLOWLIST`. Commands run without a shell, so
+  chaining, pipes, redirection, and substitution are refused
+- On Windows, skipping the shell means `.cmd`/`.bat` shims (such as `npm`) cannot
+  run — only real executables (`node`, `git`, `python`)
+
+Treat the feature as experimental, and pair it with `PROXY_API_KEY`.
+
+## Reporting a Vulnerability
+
+Please do not use public issues for vulnerabilities. Use GitHub's private
+reporting form:
+[Report a vulnerability](https://github.com/avaritiachaos/qoder-proxy/security/advisories/new).
+See [SECURITY.md](SECURITY.md) for details.
 
 ## Abuse Policy
 
@@ -143,7 +197,8 @@ Reasoning effort aliases: `qwen3.8-max-preview-effort-low`, `-medium`, `-high`, 
 For local clients that support custom OpenAI-compatible endpoints:
 
 - Base URL: `http://127.0.0.1:3000/v1`
-- API Key: use a local placeholder value, for example `not-used`
+- API Key: the `PROXY_API_KEY` you set in `.env`; if you did not set one, any
+  placeholder works (for example `not-used`)
 - Model: select from `/v1/models` or enter a model ID manually
 
 Do not enter your Qoder Token into the client. Keep the Token only in this project's local `.env`.
@@ -172,7 +227,7 @@ For local clients that support custom Anthropic-compatible endpoints:
 
 ```powershell
 $env:ANTHROPIC_BASE_URL = "http://127.0.0.1:3000"
-$env:ANTHROPIC_AUTH_TOKEN = "not-used"
+$env:ANTHROPIC_AUTH_TOKEN = "your-PROXY_API_KEY"   # any value if PROXY_API_KEY is unset
 ```
 
 Do not append `/v1` to `ANTHROPIC_BASE_URL`; clients usually add API paths automatically.
@@ -185,15 +240,22 @@ The repository includes `opencode.json` for local compatibility verification:
 opencode run --model qoder-cn-local/qwen3.7-max --variant high "reply OK"
 ```
 
+If you set `PROXY_API_KEY`, replace `not-used` in `opencode.json`'s
+`options.apiKey` with your key.
+
 ## API Endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | Health check |
-| GET | `/v1/models` | Model list |
-| POST | `/v1/chat/completions` | OpenAI-compatible chat with tools field adaptation |
-| POST | `/v1/messages` | Anthropic-compatible chat with tool_use field adaptation |
-| POST | `/v1/messages/count_tokens` | Token estimation |
+With `PROXY_API_KEY` set, `/v1/*` and `/usage/*` require the key; `/health` does not.
+
+| Method | Path | Key required | Description |
+|--------|------|------|-------------|
+| GET | `/health` | No | Health check |
+| GET | `/v1/models` | Yes | Model list |
+| POST | `/v1/chat/completions` | Yes | OpenAI-compatible chat with tools field adaptation |
+| POST | `/v1/messages` | Yes | Anthropic-compatible chat with tool_use field adaptation |
+| POST | `/v1/messages/count_tokens` | Yes | Token estimation |
+| GET | `/usage/local` | Yes | Local usage estimate |
+| POST | `/usage/reset-local` | Yes | Reset local usage statistics |
 
 ## Reasoning Options
 

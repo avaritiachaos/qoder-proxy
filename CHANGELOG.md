@@ -7,6 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-07-26
+
+Security release. Everyone running 1.4.x or earlier should update.
+
+### Breaking
+
+- **Browser clients served from a non-loopback origin are now refused.** Native
+  clients (OpenCode, Trae, Cline, editor plugins, curl) send no `Origin` header
+  and are unaffected. But if you drive the proxy from a hosted web UI — a remote
+  LobeChat/NextChat instance pointed at `127.0.0.1`, say — those requests now get
+  `403 origin_not_allowed`. Add the origin to `ALLOWED_ORIGINS` to restore it,
+  understanding that any page on that origin can then spend your quota.
+
+### Security
+
+- **Cross-origin requests are now refused.** The proxy previously ran
+  `cors({ origin: true })` with no authentication of any kind, so any web page
+  the user visited could POST to `http://127.0.0.1:3000/v1/chat/completions`
+  and read the response — spending the user's Qoder quota and issuing arbitrary
+  prompts under their account. Browser requests are now accepted only from
+  loopback origins; anything else gets `403 origin_not_allowed`, on the
+  preflight as well as the request.
+- **DNS rebinding is now blocked.** Requests whose `Host` header names a
+  non-loopback host are refused with `403 host_not_allowed`, so a domain that
+  resolves to `127.0.0.1` can no longer reach the proxy.
+- **`PROXY_API_KEY` is now actually enforced.** It was documented in
+  `.env.example` since 1.0 but never read by any code, so users who set it
+  believed they had authentication when they had none. It is now required on
+  `/v1/*` and `/usage/*` as `Authorization: Bearer <key>` or `x-api-key: <key>`,
+  compared in constant time. Leaving it empty preserves the old key-free
+  behaviour, and the startup log now says which mode is active.
+- **Server-side tool execution is confined to a workspace.** With
+  `SERVER_TOOL_EXECUTION=1`, file tools only rejected paths starting with `..`,
+  so an absolute path (`C:\Users\you\.ssh\id_rsa`) read or wrote anything the
+  proxy user could reach. All of Read/Write/Edit/Glob/Grep/Bash are now confined
+  to `SERVER_TOOL_WORKSPACE` (default: the working directory), checked both
+  lexically and after symlink resolution.
+- **The `Bash` tool is now an allowlist, and runs without a shell.** Its previous
+  blocklist of dangerous commands was ineffective — `/rm\s+-rf\s+\/+/` missed
+  `rm -fr /`, the fork-bomb pattern was an unescaped regex that matched
+  something else entirely, and none of it applied to Windows. Combined with the
+  open CORS policy above, a web page could reach remote code execution on the
+  user's machine. `Bash` now requires `SERVER_TOOL_ALLOW_BASH=1` plus a
+  non-empty `SERVER_TOOL_BASH_ALLOWLIST` of bare executable names, refuses shell
+  metacharacters, refuses path-qualified executables, and spawns via
+  `execFileSync` with no shell.
+- **`GET /` no longer returns local filesystem paths.** It exposed `cli_home`
+  (which embeds the OS username) and `cli_command` to any caller. Those are
+  printed to the server's own startup log instead.
+
+### Added
+
+- `ALLOWED_ORIGINS` and `ALLOWED_HOSTS` as explicit opt-outs for people who
+  deliberately front the proxy with another origin or hostname.
+- `SERVER_TOOL_WORKSPACE`, `SERVER_TOOL_ALLOW_BASH`, and
+  `SERVER_TOOL_BASH_ALLOWLIST` for scoping server-side tool execution.
+- A **Proxy API Key** field in the web console (Config tab), stored in
+  `localStorage`, so the console keeps working once a key is set.
+- `SECURITY.md` now documents a private disclosure channel (GitHub private
+  vulnerability reporting) and a written threat model.
+
+### Fixed
+
+- The web console's Dashboard always displayed **0 models**: it passed an
+  unparsed `Response` object where JSON was expected, so `models.data` was
+  always `undefined`.
+- `Glob` patterns treated `.` as "any character", so `*.js` also matched files
+  like `bjs`. Regex metacharacters in the pattern are now escaped before the
+  glob wildcards are applied.
+- `Glob` and `Grep` results are capped (500 matches) and report `truncated`
+  rather than walking an entire tree without bound.
+
 ## [1.4.2] - 2026-07-20
 
 ### Added

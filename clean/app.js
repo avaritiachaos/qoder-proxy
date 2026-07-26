@@ -3,6 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { anthropicError, openAiError, AppError } = require('./errors');
+const { apiKeyGuard, isAllowedOrigin, localOnlyGuard } = require('./auth');
 const { log } = require('./logger');
 const qoderCli = require('./qodercn-cli');
 const { DEFAULT_MODEL_ID, MODELS } = require('./models');
@@ -262,7 +263,16 @@ function writeChatCompletionStream(res, { model, content, parsedOutput }) {
 function createApp() {
   const app = express();
   app.disable('x-powered-by');
-  app.use(cors({ origin: true }));
+
+  // Reject foreign Hosts and cross-origin browser requests before anything
+  // else, so a disallowed origin cannot even complete a CORS preflight.
+  app.use(localOnlyGuard);
+  app.use(
+    cors({
+      origin: (origin, callback) => callback(null, isAllowedOrigin(origin)),
+      credentials: false,
+    })
+  );
   app.use(express.json({ limit: '1mb' }));
 
   app.get('/health', (_req, res) => {
@@ -271,15 +281,21 @@ function createApp() {
 
   app.get('/', (_req, res) => {
     const backend = qoderCli.getCliBackend();
+    // Deliberately no filesystem paths here: this route is reachable by the
+    // local web console, and cli_home leaks the OS username. The paths are
+    // printed to the server's own startup log instead.
     res.json({
       ok: true,
       name: 'qoder-proxy',
       mode: 'clean',
       cli_backend: backend.name,
-      cli_command: backend.command,
-      cli_home: backend.homeDir,
     });
   });
+
+  // Everything that can spend the user's Qoder quota or read local state sits
+  // behind PROXY_API_KEY (a no-op until the user sets one).
+  app.use('/v1', apiKeyGuard);
+  app.use('/usage', apiKeyGuard);
 
   app.get('/v1/models', (_req, res) => {
     res.json({

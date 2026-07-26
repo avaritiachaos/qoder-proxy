@@ -766,6 +766,41 @@ footer {
 
 footer p + p { margin-top: 0.25rem; }
 
+/* ── Proxy API key ───────────────────────────────────────────────────────────── */
+.api-key-row {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.api-key-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  padding: 0.625rem 0.75rem;
+  font-size: 0.875rem;
+  font-family: var(--font-mono);
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.api-key-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.api-key-status {
+  margin-top: 0.5rem;
+  min-height: 1.2em;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.api-key-status.ok { color: var(--success); }
+
 /* ── Responsive ──────────────────────────────────────────────────────────────── */
 @media (max-width: 768px) {
   .sidebar {

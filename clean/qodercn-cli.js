@@ -99,21 +99,12 @@ function normalizeMessages(messages) {
   });
 }
 
-function buildPrompt(messages, tools) {
+function buildPrompt(messages, tools, hasSystemToolPrompt = false) {
   const normalized = normalizeMessages(messages);
   const parts = [];
 
   const hasSystemPrompt = normalized.some((m) => m.role === 'system');
-  const hasTools = tools && tools.length > 0;
-
-  // Three paths to minimize prompt pollution:
-  //
-  // 1. Client provides its own system prompt
-  //    → No injection at all. The client's instructions dominate.
-  // 2. No system prompt, no tools
-  //    → Minimal meta-instruction so the model knows what format to follow.
-  // 3. Tools present
-  //    → Only format instructions, no role definitions.
+  const hasTools = tools && tools.length > 0 && !hasSystemToolPrompt;
 
   if (hasTools) {
     parts.push(buildToolSystemPrompt(tools));
@@ -425,11 +416,12 @@ function runQoderCnCli({
     .filter(Boolean)
     .join('\n\n');
 
+  const hasSystemToolPrompt = systemMessages.some((m) => /\[Tool Protocol\]/.test(normalizeContent(m.content)));
   const command = resolveCliCommand(process.env.CLI_COMMAND || process.env.QODERCN_CLI_PATH || backend.command);
   const modelRoute = resolveModelRoute(model);
   const cliModel = modelRoute.cliModel;
   // Build prompt with non-system messages only (system prompt goes via CLI flag)
-  const prompt = buildPrompt(nonSystemMessages, tools);
+  const prompt = buildPrompt(nonSystemMessages, tools, hasSystemToolPrompt);
   const timeoutMs = Number(process.env.QODERCN_TIMEOUT_MS || DEFAULT_TIMEOUT_MS);
   const effort = reasoningEffort || modelRoute.reasoningEffort || process.env.QODERCN_REASONING_EFFORT;
   const windowSize = contextWindow || process.env.QODERCN_CONTEXT_WINDOW;
@@ -593,10 +585,11 @@ function runQoderCnCliStream({
     .filter(Boolean)
     .join('\n\n');
 
+  const hasSystemToolPrompt = systemMessages.some((m) => /\[Tool Protocol\]/.test(normalizeContent(m.content)));
   const command = resolveCliCommand(process.env.CLI_COMMAND || process.env.QODERCN_CLI_PATH || backend.command);
   const modelRoute = resolveModelRoute(model);
   const cliModel = modelRoute.cliModel;
-  const prompt = buildPrompt(nonSystemMessages, tools);
+  const prompt = buildPrompt(nonSystemMessages, tools, hasSystemToolPrompt);
   const timeoutMs = Number(process.env.QODERCN_TIMEOUT_MS || DEFAULT_TIMEOUT_MS);
   const effort = reasoningEffort || modelRoute.reasoningEffort || process.env.QODERCN_REASONING_EFFORT;
   const windowSize = contextWindow || process.env.QODERCN_CONTEXT_WINDOW;

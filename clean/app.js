@@ -294,10 +294,10 @@ function createApp() {
 
   // Everything that can spend the user's Qoder quota or read local state sits
   // behind PROXY_API_KEY (a no-op until the user sets one).
-  app.use('/v1', apiKeyGuard);
+  app.use(['/v1', '/v1/v1'], apiKeyGuard);
   app.use('/usage', apiKeyGuard);
 
-  app.get('/v1/models', (_req, res) => {
+  app.get(['/v1/models', '/models', '/v1/v1/models'], (_req, res) => {
     res.json({
       object: 'list',
       data: MODELS.map((model) => ({
@@ -314,7 +314,7 @@ function createApp() {
     });
   });
 
-  app.post('/v1/chat/completions', async (req, res) => {
+  app.post(['/v1/chat/completions', '/chat/completions', '/v1/v1/chat/completions'], async (req, res) => {
     const started = Date.now();
     const controller = new AbortController();
     req.on('aborted', () => controller.abort());
@@ -541,7 +541,7 @@ function createApp() {
     }
   });
 
-  app.post('/v1/messages', async (req, res) => {
+  app.post(['/v1/messages', '/messages', '/v1/v1/messages'], async (req, res) => {
     const started = Date.now();
     const controller = new AbortController();
     req.on('aborted', () => controller.abort());
@@ -775,7 +775,7 @@ function createApp() {
     }
   });
 
-  app.post('/v1/messages/count_tokens', (req, res) => {
+  app.post(['/v1/messages/count_tokens', '/messages/count_tokens', '/v1/v1/messages/count_tokens'], (req, res) => {
     try {
       res.json({ input_tokens: estimateAnthropicInputTokens(req.body) });
     } catch (error) {

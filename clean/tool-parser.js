@@ -29,7 +29,7 @@ function buildToolSystemPrompt(tools) {
   return [
     '[Tool Protocol] 以下工具可供调用：',
     '',
-    JSON.stringify(toolDescriptions, null, 2),
+    JSON.stringify(toolDescriptions),
     '',
     '如需调用工具，请仅输出以下格式的 JSON 代码块：',
     '```json',

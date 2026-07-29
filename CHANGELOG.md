@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-07-29
+
+### Fixed
+
+- **Claude Code 504 timeouts and empty response issue (#9)**:
+  - Deduplicated tool prompt injection in Anthropic message handler and CLI builder so heavy tool definitions (70+ tools) are not repeated twice.
+  - Compacted `[Tool Protocol]` JSON stringification, cutting tool prompt token overhead by ~65%.
+  - Added endpoint path aliases (`/v1/messages`, `/messages`, `/v1/v1/messages`, etc.) to handle common CCSwitch / Claude Code base URL path configuration mismatches.
+  - Increased default `QODERCN_TIMEOUT_MS` to 300,000ms (5 minutes) for heavy agent tasks.
+
 ## [1.5.0] - 2026-07-26
 
 Security release. Everyone running 1.4.x or earlier should update.

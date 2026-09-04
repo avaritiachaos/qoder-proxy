@@ -8,6 +8,7 @@ const {
   buildPrompt,
   buildSpawnCommand,
   createPromptAttachment,
+  createStreamSnapshotTracker,
   extractAssistantContent,
   extractStreamDelta,
   fixLongAppendSystemPrompt,
@@ -49,7 +50,20 @@ test('builds qoderclicn print-mode args without unsupported flags', () => {
   assert.equal(args.at(-2), '--');
   assert.equal(args.at(-1), 'hello');
   assert.equal(args.includes('--max-turns=1'), false);
-  assert.equal(args.includes('--tools'), false);
+  // CLI built-in tools are disabled by default: the proxy simulates tool
+  // calling at the prompt level, and CLI-side agent loops turn chat requests
+  // into minutes of file/shell work in the proxy's own directory.
+  assert.equal(args.includes('--tools='), true);
+});
+
+test('keeps CLI built-in tools when QODERCN_CLI_TOOLS is set', () => {
+  process.env.QODERCN_CLI_TOOLS = '1';
+  try {
+    const args = buildCliArgs({ prompt: 'hello', model: 'auto' });
+    assert.equal(args.includes('--tools='), false);
+  } finally {
+    delete process.env.QODERCN_CLI_TOOLS;
+  }
 });
 
 test('builds qoderclicn reasoning effort args when requested', () => {
@@ -232,6 +246,121 @@ test('extractStreamDelta joins multiple text blocks', () => {
     },
   };
   assert.equal(extractStreamDelta(record), 'first second');
+});
+
+// The CLI's stream-json assistant events carry cumulative snapshots (verified
+// against qodercli 1.1.41: same message.id, text blocks growing from the
+// start). The tracker must emit only the newly grown suffix, never repeats.
+test('snapshot tracker converts cumulative snapshots into deltas', () => {
+  const tracker = createStreamSnapshotTracker();
+  const messageId = 'msg-1';
+
+  assert.deepEqual(
+    tracker.push({
+      type: 'assistant',
+      message: { id: messageId, content: [{ type: 'text', text: 'Hello' }] },
+    }),
+    ['Hello']
+  );
+  // Same message, grown snapshot — only the new suffix is emitted.
+  assert.deepEqual(
+    tracker.push({
+      type: 'assistant',
+      message: { id: messageId, content: [{ type: 'text', text: 'Hello world' }] },
+    }),
+    [' world']
+  );
+  // Identical snapshot repeated — nothing to emit.
+  assert.deepEqual(
+    tracker.push({
+      type: 'assistant',
+      message: { id: messageId, content: [{ type: 'text', text: 'Hello world' }] },
+    }),
+    []
+  );
+});
+
+test('snapshot tracker skips non-text blocks without consuming alignment', () => {
+  const tracker = createStreamSnapshotTracker();
+  const messageId = 'msg-1';
+
+  // Thinking block first (as observed in real stream-json output)…
+  assert.deepEqual(
+    tracker.push({
+      type: 'assistant',
+      message: { id: messageId, content: [{ type: 'thinking', thinking: 'hmm' }] },
+    }),
+    []
+  );
+  // …then the text block replaces it — the full text is new.
+  assert.deepEqual(
+    tracker.push({
+      type: 'assistant',
+      message: { id: messageId, content: [{ type: 'text', text: 'Answer.' }] },
+    }),
+    ['Answer.']
+  );
+});
+
+test('snapshot tracker resets when the message id changes', () => {
+  const tracker = createStreamSnapshotTracker();
+  assert.deepEqual(
+    tracker.push({
+      type: 'assistant',
+      message: { id: 'msg-1', content: [{ type: 'text', text: 'first turn' }] },
+    }),
+    ['first turn']
+  );
+  // A new message (e.g. another agent turn) restarts alignment — its text
+  // must be emitted in full, not treated as a suffix of the old message.
+  assert.deepEqual(
+    tracker.push({
+      type: 'assistant',
+      message: { id: 'msg-2', content: [{ type: 'text', text: 'second turn' }] },
+    }),
+    ['second turn']
+  );
+});
+
+test('snapshot tracker handles multiple text blocks in one message', () => {
+  const tracker = createStreamSnapshotTracker();
+  const messageId = 'msg-1';
+  assert.deepEqual(
+    tracker.push({
+      type: 'assistant',
+      message: {
+        id: messageId,
+        content: [
+          { type: 'text', text: 'a' },
+          { type: 'tool_use', name: 'X', input: {} },
+          { type: 'text', text: 'b' },
+        ],
+      },
+    }),
+    ['a', 'b']
+  );
+  // Both blocks grow independently.
+  assert.deepEqual(
+    tracker.push({
+      type: 'assistant',
+      message: {
+        id: messageId,
+        content: [
+          { type: 'text', text: 'a1' },
+          { type: 'tool_use', name: 'X', input: {} },
+          { type: 'text', text: 'b2' },
+        ],
+      },
+    }),
+    ['1', '2']
+  );
+});
+
+test('snapshot tracker ignores non-assistant records', () => {
+  const tracker = createStreamSnapshotTracker();
+  assert.deepEqual(tracker.push({ type: 'system', subtype: 'init' }), []);
+  assert.deepEqual(tracker.push({ type: 'result', result: 'done' }), []);
+  assert.deepEqual(tracker.push(null), []);
 });
 
 test('fixLongAppendSystemPrompt returns original args on non-Windows', () => {

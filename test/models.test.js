@@ -18,6 +18,10 @@ test('all models have required fields: id, name, cliModel, reasoning', () => {
 
 test('effort alias models have effortAlias: true', () => {
   const effortIds = [
+    'qwen3.8-max-effort-low',
+    'qwen3.8-max-effort-medium',
+    'qwen3.8-max-effort-high',
+    'qwen3.8-max-effort-max',
     'qwen3.7-max-effort-low',
     'qwen3.7-max-effort-medium',
     'qwen3.7-max-effort-high',
@@ -68,6 +72,39 @@ test('getModel returns correct model for known ID', () => {
   assert.ok(flash);
   assert.equal(flash.id, 'deepseek-v4-flash');
   assert.equal(flash.cliModel, 'DeepSeek-V4-Flash');
+});
+
+test('current Qoder CLI models resolve to their CLI model names', () => {
+  const expected = {
+    ultimate: 'Ultimate',
+    performance: 'Performance',
+    efficient: 'Efficient',
+    lite: 'Lite',
+    cantus: 'Cantus',
+    'qwen3.8-max': 'Qwen3.8-Max',
+    'qwen3.8-flash': 'Qwen3.8-Flash',
+    'qwen3.7-max': 'Qwen3.7-Max',
+    'qwen3.7-plus': 'Qwen3.7-Plus',
+    'kimi-k3': 'Kimi-K3',
+    'kimi-k2.7-code': 'Kimi-K2.7-Code',
+    'glm-5.3': 'GLM-5.3',
+    'glm-5.3-flash': 'GLM-5.3-Flash',
+    'deepseek-v4-pro': 'DeepSeek-V4-Pro',
+    'deepseek-v4-flash': 'DeepSeek-V4-Flash',
+    'minimax-m3': 'MiniMax-M3',
+  };
+  for (const [id, cliModel] of Object.entries(expected)) {
+    const route = resolveModelRoute(id);
+    assert.equal(route.baseModelId, id);
+    assert.equal(route.cliModel, cliModel, `model ${id} should resolve to ${cliModel}`);
+  }
+});
+
+test('removed model IDs fall back to auto', () => {
+  for (const id of ['qwen3.8-max-preview', 'qwen3.6-flash', 'glm-5.2', 'minimax-m2.7']) {
+    assert.equal(getModel(id), undefined, `removed model ${id} should not be registered`);
+    assert.equal(resolveModelRoute(id).cliModel, 'auto', `removed model ${id} should fall back to auto`);
+  }
 });
 
 test('getModel returns undefined for unknown ID', () => {

@@ -34,14 +34,23 @@ function listen(app) {
   });
 }
 
-test('streaming with tools returns delta.tool_calls instead of raw JSON text', async () => {
+test('streaming with tools streams text live and appends delta.tool_calls', async () => {
   const originalRun = qoderCli.runQoderCnCli;
   const originalStream = qoderCli.runQoderCnCliStream;
+  let bufferedCalled = false;
   let streamCalled = false;
-  qoderCli.runQoderCnCli = async () => TOOL_CALL_OUTPUT;
-  qoderCli.runQoderCnCliStream = async () => {
+  qoderCli.runQoderCnCli = async () => {
+    bufferedCalled = true;
+    return TOOL_CALL_OUTPUT;
+  };
+  // Emulate the incremental deltas the CLI streamer delivers after snapshot
+  // conversion: prose first, then the tool-call JSON growing in pieces.
+  qoderCli.runQoderCnCliStream = async ({ onDelta }) => {
     streamCalled = true;
-    return '';
+    onDelta('Let me read that file.');
+    onDelta('\n```json\n{"tool_calls": [{"name": "read_file"');
+    onDelta(', "arguments": {"path": "/tmp/test.txt"}}]}\n```');
+    return 'Let me read that file.\n```json\n{"tool_calls": [{"name": "read_file", "arguments": {"path": "/tmp/test.txt"}}]}\n```';
   };
   const { server, baseUrl } = await listen(createApp());
   try {
@@ -61,15 +70,25 @@ test('streaming with tools returns delta.tool_calls instead of raw JSON text', a
     assert.match(text, /"name":"read_file"/);
     assert.match(text, /"finish_reason":"tool_calls"/);
     assert.match(text, /data: \[DONE\]/);
-    // The raw passthrough streamer must not be used when tools are declared
-    assert.equal(streamCalled, false);
-    // Arguments must be a JSON string per OpenAI spec
-    const toolCallChunk = text
+    // Tool-declared streaming now uses the true streaming path.
+    assert.equal(streamCalled, true);
+    assert.equal(bufferedCalled, false);
+    const chunks = text
       .split('\n')
       .map((line) => line.replace(/^data: /, '').trim())
       .filter((line) => line && line !== '[DONE]')
-      .map((line) => JSON.parse(line))
-      .find((chunk) => chunk.choices?.[0]?.delta?.tool_calls);
+      .map((line) => JSON.parse(line));
+    // The prose prefix streams live…
+    const firstContent = chunks.find((chunk) => chunk.choices?.[0]?.delta?.content);
+    assert.equal(firstContent.choices[0].delta.content, 'Let me read that file.');
+    // …and the tool-call JSON never leaks into content deltas: the gate
+    // withholds it, and only the prefix (incl. trailing newline) is flushed.
+    const streamedText = chunks
+      .filter((chunk) => chunk.choices?.[0]?.delta?.content)
+      .map((chunk) => chunk.choices[0].delta.content)
+      .join('');
+    assert.equal(streamedText, 'Let me read that file.\n');
+    const toolCallChunk = chunks.find((chunk) => chunk.choices?.[0]?.delta?.tool_calls);
     assert.ok(toolCallChunk);
     const call = toolCallChunk.choices[0].delta.tool_calls[0];
     assert.equal(call.index, 0);
@@ -84,8 +103,12 @@ test('streaming with tools returns delta.tool_calls instead of raw JSON text', a
 });
 
 test('streaming with tools falls back to streamed text when model replies without tool calls', async () => {
-  const originalRun = qoderCli.runQoderCnCli;
-  qoderCli.runQoderCnCli = async () => 'Just a normal answer.';
+  const originalStream = qoderCli.runQoderCnCliStream;
+  qoderCli.runQoderCnCliStream = async ({ onDelta }) => {
+    onDelta('Just a ');
+    onDelta('normal answer.');
+    return 'Just a normal answer.';
+  };
   const { server, baseUrl } = await listen(createApp());
   try {
     const response = await fetch(`${baseUrl}/v1/chat/completions`, {
@@ -99,11 +122,50 @@ test('streaming with tools falls back to streamed text when model replies withou
     });
     assert.equal(response.status, 200);
     const text = await response.text();
-    assert.match(text, /"content":"Just a normal answer\."/);
+    // Both halves stream as separate live deltas.
+    assert.match(text, /"content":"Just a "/);
+    assert.match(text, /"content":"normal answer\."/);
     assert.match(text, /"finish_reason":"stop"/);
     assert.match(text, /data: \[DONE\]/);
   } finally {
-    qoderCli.runQoderCnCli = originalRun;
+    qoderCli.runQoderCnCliStream = originalStream;
+    server.close();
+  }
+});
+
+test('streaming a bare tool-call reply emits no text content, only tool_calls', async () => {
+  const originalStream = qoderCli.runQoderCnCliStream;
+  qoderCli.runQoderCnCliStream = async ({ onDelta }) => {
+    // The model jumps straight into the tool block — nothing may stream
+    // until the stream completes and the block parses as tool calls.
+    onDelta('```json\n{"tool_calls"');
+    onDelta(': [{"name": "read_file", "arguments": {}}]}\n```');
+    return TOOL_CALL_OUTPUT.replace('"path": "/tmp/test.txt"', '');
+  };
+  const { server, baseUrl } = await listen(createApp());
+  try {
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        stream: true,
+        messages: [{ role: 'user', content: 'read the file' }],
+        tools: OPENAI_TOOLS,
+      }),
+    });
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    const chunks = text
+      .split('\n')
+      .map((line) => line.replace(/^data: /, '').trim())
+      .filter((line) => line && line !== '[DONE]')
+      .map((line) => JSON.parse(line));
+    // No content delta at all — the gate held back the entire JSON payload.
+    assert.equal(chunks.some((chunk) => chunk.choices?.[0]?.delta?.content), false);
+    assert.match(text, /"tool_calls"/);
+    assert.match(text, /"finish_reason":"tool_calls"/);
+  } finally {
+    qoderCli.runQoderCnCliStream = originalStream;
     server.close();
   }
 });
@@ -166,14 +228,20 @@ test('OpenAI streaming failure emits an SSE error event instead of a silent empt
   }
 });
 
-test('anthropic streaming with tools returns tool_use blocks with input_json_delta', async () => {
+test('anthropic streaming with tools streams text live and appends tool_use blocks', async () => {
   const originalRun = qoderCli.runQoderCnCli;
   const originalStream = qoderCli.runQoderCnCliStream;
+  let bufferedCalled = false;
   let streamCalled = false;
-  qoderCli.runQoderCnCli = async () => TOOL_CALL_OUTPUT;
-  qoderCli.runQoderCnCliStream = async () => {
+  qoderCli.runQoderCnCli = async () => {
+    bufferedCalled = true;
+    return TOOL_CALL_OUTPUT;
+  };
+  qoderCli.runQoderCnCliStream = async ({ onDelta }) => {
     streamCalled = true;
-    return '';
+    onDelta('Reading the file now.');
+    onDelta('\n```json\n{"tool_calls": [{"name": "read_file", "arguments": {"path": "/tmp/test.txt"}}]}\n```');
+    return 'Reading the file now.\n```json\n{"tool_calls": [{"name": "read_file", "arguments": {"path": "/tmp/test.txt"}}]}\n```';
   };
   const { server, baseUrl } = await listen(createApp());
   try {
@@ -190,14 +258,53 @@ test('anthropic streaming with tools returns tool_use blocks with input_json_del
     assert.equal(response.status, 200);
     assert.match(response.headers.get('content-type'), /text\/event-stream/);
     const text = await response.text();
+    // The prose prefix streams as a live text_delta…
+    assert.match(text, /event: content_block_delta\ndata: \{"type":"content_block_delta","index":0,"delta":\{"type":"text_delta","text":"Reading the file now\."\}/);
+    // …then the tool_use block is appended with streamed input JSON.
     assert.match(text, /"type":"tool_use"/);
     assert.match(text, /"name":"read_file"/);
     assert.match(text, /"type":"input_json_delta"/);
     assert.match(text, /"stop_reason":"tool_use"/);
     assert.match(text, /event: message_stop/);
-    assert.equal(streamCalled, false);
+    assert.equal(streamCalled, true);
+    assert.equal(bufferedCalled, false);
+    // The tool-call JSON must never appear inside a text_delta.
+    const textDeltas = [...text.matchAll(/"type":"text_delta","text":"([^"]*)"/g)].map((m) => m[1]);
+    assert.equal(textDeltas.some((delta) => delta.includes('tool_calls')), false);
   } finally {
     qoderCli.runQoderCnCli = originalRun;
+    qoderCli.runQoderCnCliStream = originalStream;
+    server.close();
+  }
+});
+
+test('anthropic streaming a bare tool-call reply opens no text block', async () => {
+  const originalStream = qoderCli.runQoderCnCliStream;
+  qoderCli.runQoderCnCliStream = async ({ onDelta }) => {
+    onDelta('```json\n{"tool_calls"');
+    onDelta(': [{"name": "read_file", "arguments": {"path": "/tmp/test.txt"}}]}\n```');
+    return TOOL_CALL_OUTPUT;
+  };
+  const { server, baseUrl } = await listen(createApp());
+  try {
+    const response = await fetch(`${baseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        stream: true,
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: 'read the file' }],
+        tools: ANTHROPIC_TOOLS,
+      }),
+    });
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    // The first content block is the tool_use block at index 0 — no empty
+    // text block precedes it.
+    assert.match(text, /"type":"content_block_start","index":0,"content_block":\{"type":"tool_use"/);
+    assert.equal(text.includes('"type":"text_delta"'), false);
+    assert.match(text, /"stop_reason":"tool_use"/);
+  } finally {
     qoderCli.runQoderCnCliStream = originalStream;
     server.close();
   }

@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   buildToolSystemPrompt,
+  findStreamingSafePrefixLength,
   parseToolCallOutput,
   generateCallId,
   formatToolResultForPrompt,
@@ -185,4 +186,117 @@ test('normalizeAnthropicTools converts input_schema to parameters', () => {
   assert.equal(normalized[0].name, 'Read');
   assert.equal(normalized[0].parameters.type, 'object');
   assert.equal(normalized[0].parameters.properties.path.type, 'string');
+});
+
+test('parseToolCallOutput reports matchStart for fenced tool-call blocks', () => {
+  const output = 'Let me check.\n```json\n{"tool_calls": [{"name": "read_file"}]}\n```';
+  const result = parseToolCallOutput(output);
+  assert.equal(result.type, 'tool_calls');
+  assert.equal(output.slice(0, result.matchStart), 'Let me check.\n');
+  assert.equal(output.slice(result.matchStart).startsWith('```json'), true);
+});
+
+test('parseToolCallOutput reports matchStart for bare JSON tool calls', () => {
+  const output = 'Checking now. {"tool_calls": [{"name": "search", "arguments": {"query": "x"}}]}';
+  const result = parseToolCallOutput(output);
+  assert.equal(result.type, 'tool_calls');
+  assert.equal(output.slice(0, result.matchStart), 'Checking now. ');
+  assert.equal(output[result.matchStart], '{');
+});
+
+test('findStreamingSafePrefixLength passes plain text through', () => {
+  const text = 'Hello, this is a normal answer.';
+  assert.equal(findStreamingSafePrefixLength(text), text.length);
+});
+
+test('findStreamingSafePrefixLength returns 0 for empty input', () => {
+  assert.equal(findStreamingSafePrefixLength(''), 0);
+  assert.equal(findStreamingSafePrefixLength(null), 0);
+  assert.equal(findStreamingSafePrefixLength(undefined), 0);
+});
+
+test('findStreamingSafePrefixLength holds back an unclosed code fence', () => {
+  const prefix = 'Let me read the file.\n';
+  const text = prefix + '```json\n{"tool_calls": [{"name": "re';
+  assert.equal(findStreamingSafePrefixLength(text), prefix.length);
+});
+
+test('findStreamingSafePrefixLength holds back an unclosed bare JSON object', () => {
+  const prefix = 'Checking: ';
+  const text = prefix + '{"tool_calls": [{"name": "search"';
+  assert.equal(findStreamingSafePrefixLength(text), prefix.length);
+});
+
+test('findStreamingSafePrefixLength releases balanced braces in plain text', () => {
+  const text = 'Use the {host, port} placeholders here.';
+  assert.equal(findStreamingSafePrefixLength(text), text.length);
+});
+
+test('findStreamingSafePrefixLength ignores braces inside JSON strings', () => {
+  // A brace inside a JSON string value must not affect depth counting.
+  const closed = '{"tool_calls": [{"name": "x", "arguments": {"a": "}"}}]}';
+  // …but a closed object containing "tool_calls" is withheld as payload.
+  assert.equal(findStreamingSafePrefixLength(closed), 0);
+  const plain = 'config: {"a": "}"} done';
+  assert.equal(findStreamingSafePrefixLength(plain), plain.length);
+  // While the same JSON is still incomplete, everything from the outermost
+  // brace stays withheld.
+  const prefix = 'note: ';
+  const partial = prefix + '{"tool_calls": [{"name": "x"';
+  assert.equal(findStreamingSafePrefixLength(partial), prefix.length);
+});
+
+test('findStreamingSafePrefixLength withholds a closed json fence until stream end', () => {
+  // The tool block stays payload even after its fence closes — the stream
+  // may still be running, and the JSON must never render as text.
+  const prefix = 'Let me check.\n';
+  const text = prefix + '```json\n{"tool_calls": [{"name": "read_file"}]}\n```\nTrailing line.';
+  assert.equal(findStreamingSafePrefixLength(text), prefix.length);
+});
+
+test('findStreamingSafePrefixLength withholds a closed bare JSON tool-call object', () => {
+  const prefix = 'Checking now. ';
+  const text = prefix + '{"tool_calls": [{"name": "search"}]} done';
+  assert.equal(findStreamingSafePrefixLength(text), prefix.length);
+});
+
+test('findStreamingSafePrefixLength releases a closed non-json fence with following text', () => {
+  const text = 'before\n```js\nconsole.log(1)\n```\nafter';
+  assert.equal(findStreamingSafePrefixLength(text), text.length);
+});
+
+test('findStreamingSafePrefixLength holds back trailing partial backticks', () => {
+  assert.equal(findStreamingSafePrefixLength('answer text `'), 'answer text '.length);
+  assert.equal(findStreamingSafePrefixLength('answer text ``'), 'answer text '.length);
+  // A full fence marker followed by content is fence handling, not rule 3
+  const text = 'answer\n```json\n{}';
+  assert.equal(findStreamingSafePrefixLength(text), 'answer\n'.length);
+});
+
+test('findStreamingSafePrefixLength does not touch inline backticks', () => {
+  const text = 'Run `npm test` first.';
+  assert.equal(findStreamingSafePrefixLength(text), text.length);
+});
+
+test('gated streaming never leaks tool-call JSON: incremental simulation', () => {
+  // Simulate the exact chunking a live stream could produce and assert the
+  // gate never forwards any part of the tool-call payload early.
+  const finalText =
+    'Let me read that file first.\n```json\n{"tool_calls": [{"name": "read_file", "arguments": {"path": "/tmp/test.txt"}}]}\n```';
+  let forwarded = '';
+  // Feed the text character by character — the most adversarial chunking.
+  for (let i = 0; i < finalText.length; i++) {
+    const partial = finalText.slice(0, i + 1);
+    const safe = findStreamingSafePrefixLength(partial);
+    if (safe > forwarded.length) {
+      const chunk = partial.slice(forwarded.length, safe);
+      assert.equal(partial.startsWith(forwarded + chunk), true);
+      forwarded += chunk;
+    }
+  }
+  // The forwarded text must be exactly the prefix before the tool block.
+  assert.equal(forwarded, 'Let me read that file first.\n');
+  const parsed = parseToolCallOutput(finalText);
+  assert.equal(parsed.type, 'tool_calls');
+  assert.equal(finalText.slice(0, parsed.matchStart), forwarded);
 });

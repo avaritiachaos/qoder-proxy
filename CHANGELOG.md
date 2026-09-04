@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **CLI built-in tools are now disabled by default** (`--tools=` is appended to the CLI invocation). The upstream CLI is a full agent: with its tools enabled, a plain chat request could turn into minutes of multi-turn file/shell loops inside the proxy's own working directory — easily outliving `QODERCN_TIMEOUT_MS` and surfacing in agent clients (e.g. Claude Code) as empty responses ("No response requested.") or `upstream_timeout` errors. Measured latency for the same model/prompt dropped from ~220s to ~3s. Set `QODERCN_CLI_TOOLS=1` to keep the CLI's built-in tools.
+
+### Fixed
+
+- **Requests could hang forever when the CLI exited but its stdio pipes stayed open** (e.g. a descendant process inheriting stdout): `close` never fires, so the request promise never settled and even the timeout kill could not end it. Both CLI runners now settle from the `exit` event after a short flush grace period, and force-settle shortly after a timeout kill.
+- **Duplicated text in longer streaming replies**: the CLI's `stream-json` assistant events carry cumulative snapshots of the growing message (same message id, text blocks growing from the start — verified against qodercli 1.1.41), not incremental deltas. Forwarding them directly replayed earlier text whenever a reply spanned multiple snapshots. A snapshot tracker now aligns text blocks per message and emits only newly grown suffixes.
+- `.env.example` suggested `QODERCN_TIMEOUT_MS=120000`, below the 300s code default and far below what queued, tool-heavy agent requests need; it now suggests 600000.
+
+### Added
+
+- **True streaming for tool-declared requests**: `stream: true` requests that carry `tools` no longer wait for the fully buffered reply. The text part streams live through a safety gate (`findStreamingSafePrefixLength`) that withholds any tail which could still be or grow into the tool-call JSON payload — unclosed or closed ` ```json ` fences, unbalanced or `"tool_calls"`-bearing JSON objects, trailing partial backticks. Once the stream completes, the withheld tail is parsed and tool calls are appended as structured `delta.tool_calls` chunks (OpenAI) or `tool_use` blocks with `input_json_delta` (Anthropic). Agent clients like Claude Code now show live progress and receive tool confirmations in real time, while structured tool calling is unchanged. Skipped when `SERVER_TOOL_EXECUTION=1` — the multi-round server-side tool loop stays buffered.
+- **Model registry update** (matching `qodercli --list-models`, qodercli 1.1.41):
+  - New routing tiers: `ultimate` (`Ultimate`), `performance` (`Performance`), `efficient` (`Efficient`), `lite` (`Lite`), `cantus` (`Cantus`).
+  - New models: `qwen3.8-flash` (`Qwen3.8-Flash`), `kimi-k3` (`Kimi-K3`), `glm-5.3-flash` (`GLM-5.3-Flash`).
+  - Renamed to their current CLI offerings: `qwen3.8-max-preview` → `qwen3.8-max` (`Qwen3.8-Max`, effort aliases renamed accordingly), `glm-5.2` → `glm-5.3` (`GLM-5.3`), `minimax-m2.7` → `minimax-m3` (`MiniMax-M3`).
+  - Removed `qwen3.6-flash`, which is no longer offered by the CLI. Requests for removed model IDs fall back to `auto`.
+  - Synchronized model keys in `opencode.json` and both Chinese/English READMEs.
+
 ## [1.5.1] - 2026-07-29
 
 ### Fixed

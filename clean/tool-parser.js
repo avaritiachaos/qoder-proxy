@@ -104,6 +104,7 @@ function extractBalancedJsonWithToolCalls(text) {
         return {
           json: candidate,
           prefixText: text.slice(0, start).trim(),
+          start,
         };
       }
     } catch (_) {
@@ -135,10 +136,14 @@ function parseToolCallOutput(text) {
 
   let jsonString = null;
   let prefixText = '';
+  // Index where the tool-call JSON block starts in the original text. Used by
+  // the streaming gate to know exactly which part of the text is tool payload.
+  let matchStart = -1;
 
   if (blockMatch) {
     jsonString = blockMatch[1].trim();
     prefixText = text.slice(0, blockMatch.index).trim();
+    matchStart = blockMatch.index;
   } else {
     // Fallback: extract the outermost balanced JSON object containing "tool_calls"
     // This handles cases where the model forgets the markdown fences.
@@ -148,6 +153,7 @@ function parseToolCallOutput(text) {
     if (extracted) {
       jsonString = extracted.json;
       prefixText = extracted.prefixText;
+      matchStart = extracted.start;
     }
   }
 
@@ -199,7 +205,116 @@ function parseToolCallOutput(text) {
     arguments: call.arguments || {},
   }));
 
-  return { type: 'tool_calls', toolCalls, prefixText };
+  return { type: 'tool_calls', toolCalls, prefixText, matchStart };
+}
+
+/**
+ * Compute how much of a partially streamed text is safe to forward to the
+ * client right now.
+ *
+ * Tool calls are simulated at the prompt level: the model emits a ```json
+ * fence (or a bare JSON object) containing {"tool_calls": [...]} that must be
+ * parsed as a whole and returned as structured tool_use/tool_calls blocks —
+ * never as visible text. While streaming we therefore hold back any tail
+ * that could still be or grow into such a block:
+ *
+ *   1. any unclosed ``` fence (its language tag may still be arriving), and
+ *      any CLOSED fence tagged json/untagged — a complete tool block must
+ *      stay withheld even after its fence closes, since the stream has not
+ *      ended yet and the block is payload, not prose. Fences with another
+ *      explicit language (```js, ```python …) are ordinary code samples and
+ *      pass through once closed.
+ *   2. an unclosed outermost { ... } structure, and any closed outermost
+ *      object containing "tool_calls" (string-aware brace counting).
+ *   3. a trailing run of 1-2 backticks (a ``` marker arriving in pieces).
+ *
+ * Everything before the withheld region can never be part of the tool-call
+ * payload and is streamed immediately. The withheld tail is resolved once
+ * the stream completes: parsed as tool calls or flushed as plain text.
+ */
+function findStreamingSafePrefixLength(text) {
+  if (!text) return 0;
+  let safeEnd = text.length;
+
+  // 1) Fence scan. Closed non-json fences are passed over; anything else
+  // caps the safe region at the fence start.
+  let cursor = 0;
+  while (cursor < safeEnd) {
+    const openIdx = text.indexOf('```', cursor);
+    if (openIdx === -1 || openIdx >= safeEnd) break;
+    const lineEnd = text.indexOf('\n', openIdx + 3);
+    if (lineEnd === -1 || lineEnd >= safeEnd) {
+      // Fence marker (and maybe language tag) still arriving, or the fence
+      // has no closing line yet — withhold from the marker.
+      safeEnd = Math.min(safeEnd, openIdx);
+      break;
+    }
+    const lang = text.slice(openIdx + 3, lineEnd).trim();
+    const closeIdx = text.indexOf('```', lineEnd + 1);
+    if (closeIdx === -1) {
+      // Unclosed fence — its content is still growing.
+      safeEnd = Math.min(safeEnd, openIdx);
+      break;
+    }
+    if (lang === '' || lang === 'json') {
+      // Closed fence that may carry the tool-call payload — withhold the
+      // whole block (and anything after it) until the stream completes.
+      safeEnd = Math.min(safeEnd, openIdx);
+      break;
+    }
+    // Ordinary code sample in another language — skip past it.
+    cursor = closeIdx + 3;
+  }
+
+  // 2) String-aware brace counting over the remaining safe region: hold back
+  // an unclosed outermost object, or a closed one containing "tool_calls".
+  let depth = 0;
+  let outerBraceStart = -1;
+  let inString = false;
+  let escapeNext = false;
+  for (let i = 0; i < safeEnd; i++) {
+    const ch = text[i];
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+    if (ch === '\\' && inString) {
+      escapeNext = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === '{') {
+      if (depth === 0) outerBraceStart = i;
+      depth++;
+    } else if (ch === '}') {
+      if (depth > 0) {
+        depth--;
+        if (depth === 0) {
+          if (text.slice(outerBraceStart, i + 1).includes('"tool_calls"')) {
+            safeEnd = Math.min(safeEnd, outerBraceStart);
+            break;
+          }
+          outerBraceStart = -1;
+        }
+      }
+    }
+  }
+  if (depth > 0 && outerBraceStart !== -1) {
+    safeEnd = Math.min(safeEnd, outerBraceStart);
+  }
+
+  // 3) A trailing run of 1-2 backticks could be the start of a ``` marker
+  // split across chunks — hold them back until the next chunk disambiguates.
+  if (safeEnd > 0) {
+    const tailMatch = text.slice(0, safeEnd).match(/`{1,2}$/);
+    if (tailMatch) safeEnd -= tailMatch[0].length;
+  }
+
+  return safeEnd;
 }
 
 /**
@@ -285,6 +400,7 @@ function normalizeAnthropicTools(tools) {
 
 module.exports = {
   buildToolSystemPrompt,
+  findStreamingSafePrefixLength,
   formatToolResultForPrompt,
   generateCallId,
   normalizeAnthropicTools,

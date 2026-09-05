@@ -183,7 +183,9 @@ async function main() {
   }
 
   console.log(`\n  Results: ${passed} passed, ${failed} failed, ${skipped} skipped\n`);
-  process.exit(failed > 0 ? 1 : 0);
+  if (failed > 0) {
+    process.exitCode = 1;
+  }
 }
 
 main();

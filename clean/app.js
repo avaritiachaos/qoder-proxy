@@ -17,6 +17,7 @@ const {
 } = require('./anthropic');
 const {
   parseToolCallOutput,
+  findStreamingSafePrefixLength,
   generateCallId,
   normalizeOpenAiTools,
   normalizeAnthropicTools,
@@ -419,6 +420,174 @@ function createApp() {
         return;
       }
 
+      // True streaming with tools declared: the text part is forwarded live
+      // through a safety gate that withholds any tail which could still grow
+      // into the tool-call JSON block; once the stream completes, the full
+      // text is parsed and tool calls are appended as structured blocks.
+      // (Skipped when server-side tool execution is enabled — the multi-round
+      // tool loop below stays buffered.)
+      if (
+        req.body.stream &&
+        normalizedTools &&
+        normalizedTools.length &&
+        !isServerToolExecutionEnabled()
+      ) {
+        const id = `chatcmpl-${Date.now()}`;
+        const created = Math.floor(Date.now() / 1000);
+
+        res.status(200);
+        res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache, no-transform');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders?.();
+
+        writeSse(res, {
+          id,
+          object: 'chat.completion.chunk',
+          created,
+          model,
+          choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
+        });
+
+        let fullText = '';
+        let forwardedLength = 0;
+        const writeContentChunk = (content) => {
+          if (!content) return;
+          writeSse(res, {
+            id,
+            object: 'chat.completion.chunk',
+            created,
+            model,
+            choices: [{ index: 0, delta: { content }, finish_reason: null }],
+          });
+        };
+
+        try {
+          await qoderCli.runQoderCnCliStream({
+            messages: req.body.messages,
+            model,
+            tools: normalizedTools,
+            reasoningEffort: requestOptions.reasoningEffort,
+            contextWindow: requestOptions.contextWindow,
+            maxOutputTokens: requestOptions.maxOutputTokens,
+            signal: controller.signal,
+            onDelta: (delta) => {
+              fullText += delta;
+              const safeLength = findStreamingSafePrefixLength(fullText);
+              if (safeLength > forwardedLength) {
+                writeContentChunk(fullText.slice(forwardedLength, safeLength));
+                forwardedLength = safeLength;
+              }
+            },
+          });
+        } catch (streamError) {
+          log('chat stream failed', {
+            code: streamError.code || 'internal_error',
+            status: streamError.status || 500,
+            duration_ms: Date.now() - started,
+            message: streamError.message,
+          });
+          // Headers are already sent — surface the error as an SSE event so
+          // clients render a failure instead of a silent empty message.
+          if (!res.writableEnded) {
+            try {
+              writeSse(res, {
+                error: {
+                  message: streamError.message || 'Upstream request failed.',
+                  type: 'server_error',
+                  code: streamError.code || 'internal_error',
+                },
+              });
+              res.write('data: [DONE]\n\n');
+              res.end();
+            } catch (_) { /* ignore */ }
+          }
+          return;
+        }
+
+        const parsedOutput = parseToolCallOutput(fullText);
+        const isToolCalls = parsedOutput.type === 'tool_calls';
+        if (isToolCalls) {
+          log('chat tool calls detected', {
+            tool_count: parsedOutput.toolCalls.length,
+            tools: parsedOutput.toolCalls.map((t) => t.name),
+            streamed: true,
+          });
+        }
+
+        // Flush whichever text belongs to the final answer but was still held
+        // back by the gate: the prefix before the tool-call block, or the
+        // remaining tail of a plain-text reply. The gate guarantees forwarded
+        // text is always a prefix of the final text — never the tool payload.
+        const expectedText =
+          isToolCalls && parsedOutput.matchStart >= 0
+            ? fullText.slice(0, parsedOutput.matchStart)
+            : fullText;
+        if (
+          expectedText.length > forwardedLength &&
+          expectedText.startsWith(fullText.slice(0, forwardedLength))
+        ) {
+          writeContentChunk(expectedText.slice(forwardedLength));
+        } else if (expectedText.length > forwardedLength) {
+          log('warning: streamed prefix diverged from final text', { model });
+        }
+
+        if (isToolCalls) {
+          writeSse(res, {
+            id,
+            object: 'chat.completion.chunk',
+            created,
+            model,
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: parsedOutput.toolCalls.map((call, index) => ({
+                    index,
+                    id: generateCallId('call_'),
+                    type: 'function',
+                    function: {
+                      name: call.name,
+                      // OpenAI spec: arguments is a JSON string, not a parsed object
+                      arguments: JSON.stringify(call.arguments || {}),
+                    },
+                  })),
+                },
+                finish_reason: null,
+              },
+            ],
+          });
+        }
+
+        writeSse(res, {
+          id,
+          object: 'chat.completion.chunk',
+          created,
+          model,
+          choices: [
+            {
+              index: 0,
+              delta: {},
+              finish_reason: isToolCalls ? 'tool_calls' : 'stop',
+            },
+          ],
+        });
+        res.write('data: [DONE]\n\n');
+        res.end();
+        log('chat stream completed', {
+          duration_ms: Date.now() - started,
+          with_tools: true,
+          tool_calls: isToolCalls ? parsedOutput.toolCalls.length : 0,
+        });
+        trackRequest({
+          model,
+          inputText: extractTextFromMessages(req.body.messages),
+          outputText: fullText,
+          isError: false,
+        });
+        return;
+      }
+
       // Non-streaming path (or tool calls with stream=true → downgraded)
       // Build working messages for potential tool-call loops
       let workingMessages = [...req.body.messages];
@@ -648,6 +817,188 @@ function createApp() {
           model,
           inputText: extractTextFromMessages(req.body.messages),
           outputText: '',
+          isError: false,
+        });
+        return;
+      }
+
+      // True streaming with tools declared: same gated approach as the
+      // OpenAI branch — text streams live, the tool-call JSON tail is held
+      // back and appended as structured tool_use blocks after the stream
+      // completes. The text block only opens when text actually arrives, so
+      // a pure tool-call reply carries no empty text block.
+      if (
+        req.body.stream &&
+        tools &&
+        tools.length &&
+        !isServerToolExecutionEnabled()
+      ) {
+        const msgId = `msg_${Date.now()}`;
+
+        res.status(200);
+        res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache, no-transform');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders?.();
+
+        writeAnthropicSse(res, 'message_start', {
+          type: 'message_start',
+          message: {
+            id: msgId,
+            type: 'message',
+            role: 'assistant',
+            model,
+            content: [],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: { input_tokens: 0, output_tokens: 0 },
+          },
+        });
+
+        let fullText = '';
+        let forwardedLength = 0;
+        let textBlockStarted = false;
+        const writeTextDelta = (text) => {
+          if (!text) return;
+          if (!textBlockStarted) {
+            textBlockStarted = true;
+            writeAnthropicSse(res, 'content_block_start', {
+              type: 'content_block_start',
+              index: 0,
+              content_block: { type: 'text', text: '' },
+            });
+          }
+          writeAnthropicSse(res, 'content_block_delta', {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'text_delta', text },
+          });
+        };
+
+        try {
+          await qoderCli.runQoderCnCliStream({
+            messages,
+            model,
+            tools,
+            reasoningEffort: requestOptions.reasoningEffort,
+            contextWindow: requestOptions.contextWindow,
+            maxOutputTokens: requestOptions.maxOutputTokens || req.body.max_tokens,
+            signal: controller.signal,
+            onDelta: (delta) => {
+              fullText += delta;
+              const safeLength = findStreamingSafePrefixLength(fullText);
+              if (safeLength > forwardedLength) {
+                writeTextDelta(fullText.slice(forwardedLength, safeLength));
+                forwardedLength = safeLength;
+              }
+            },
+          });
+        } catch (streamError) {
+          log('anthropic stream failed', {
+            code: streamError.code || 'internal_error',
+            status: streamError.status || 500,
+            duration_ms: Date.now() - started,
+            message: streamError.message,
+          });
+          // Headers are already sent — surface the error as an SSE error
+          // event so clients render a failure instead of an empty message.
+          if (!res.writableEnded) {
+            try {
+              writeAnthropicSse(res, 'error', {
+                type: 'error',
+                error: {
+                  type: 'api_error',
+                  message: streamError.message || 'Upstream request failed.',
+                },
+              });
+              res.end();
+            } catch (_) { /* ignore */ }
+          }
+          return;
+        }
+
+        const parsedOutput = parseToolCallOutput(fullText);
+        const isToolCalls = parsedOutput.type === 'tool_calls';
+        if (isToolCalls) {
+          log('anthropic tool calls detected', {
+            tool_count: parsedOutput.toolCalls.length,
+            tools: parsedOutput.toolCalls.map((t) => t.name),
+            streamed: true,
+          });
+        }
+
+        // Flush the text part of the final answer still held by the gate (see
+        // the OpenAI branch for the prefix invariant).
+        const expectedText =
+          isToolCalls && parsedOutput.matchStart >= 0
+            ? fullText.slice(0, parsedOutput.matchStart)
+            : fullText;
+        if (
+          expectedText.length > forwardedLength &&
+          expectedText.startsWith(fullText.slice(0, forwardedLength))
+        ) {
+          writeTextDelta(expectedText.slice(forwardedLength));
+        } else if (expectedText.length > forwardedLength) {
+          log('warning: streamed prefix diverged from final text', { model });
+        }
+
+        let blockIndex = 0;
+        if (textBlockStarted) {
+          writeAnthropicSse(res, 'content_block_stop', {
+            type: 'content_block_stop',
+            index: 0,
+          });
+          blockIndex = 1;
+        }
+
+        if (isToolCalls) {
+          for (const call of parsedOutput.toolCalls) {
+            writeAnthropicSse(res, 'content_block_start', {
+              type: 'content_block_start',
+              index: blockIndex,
+              content_block: {
+                type: 'tool_use',
+                id: generateCallId('toolu_'),
+                name: call.name,
+                input: {},
+              },
+            });
+            writeAnthropicSse(res, 'content_block_delta', {
+              type: 'content_block_delta',
+              index: blockIndex,
+              delta: {
+                type: 'input_json_delta',
+                // Anthropic streams tool input as partial JSON text
+                partial_json: JSON.stringify(call.arguments || {}),
+              },
+            });
+            writeAnthropicSse(res, 'content_block_stop', {
+              type: 'content_block_stop',
+              index: blockIndex,
+            });
+            blockIndex += 1;
+          }
+        }
+
+        writeAnthropicSse(res, 'message_delta', {
+          type: 'message_delta',
+          delta: {
+            stop_reason: isToolCalls ? 'tool_use' : 'end_turn',
+            stop_sequence: null,
+          },
+          usage: { output_tokens: 0 },
+        });
+        writeAnthropicSse(res, 'message_stop', { type: 'message_stop' });
+        res.end();
+        log('anthropic stream completed', {
+          duration_ms: Date.now() - started,
+          with_tools: true,
+          tool_calls: isToolCalls ? parsedOutput.toolCalls.length : 0,
+        });
+        trackRequest({
+          model,
+          inputText: extractTextFromMessages(req.body.messages),
+          outputText: fullText,
           isError: false,
         });
         return;

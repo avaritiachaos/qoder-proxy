@@ -187,9 +187,9 @@ CLI_BACKEND=global   # 使用 qodercli
 
 ## 支持的模型
 
-`qoder-cn`、`auto`、`qwen3.8-max-preview`、`qwen3.7-max`、`qwen3.7-plus`、`glm-5.2`、`kimi-k2.7-code`、`minimax-m2.7`、`qwen3.6-flash`、`deepseek-v4-pro`、`deepseek-v4-flash`
+`qoder-cn`、`auto`、`ultimate`、`performance`、`efficient`、`lite`、`cantus`、`qwen3.8-max`、`qwen3.8-flash`、`qwen3.7-max`、`qwen3.7-plus`、`kimi-k3`、`kimi-k2.7-code`、`glm-5.3`、`glm-5.3-flash`、`deepseek-v4-pro`、`deepseek-v4-flash`、`minimax-m3`
 
-推理强度别名：`qwen3.8-max-preview-effort-low`、`-medium`、`-high`、`-max`，以及 `qwen3.7-max-effort-low`、`-medium`、`-high`、`-max`
+推理强度别名：`qwen3.8-max-effort-low`、`-medium`、`-high`、`-max`，以及 `qwen3.7-max-effort-low`、`-medium`、`-high`、`-max`
 
 ## 本地客户端适配
 
@@ -219,7 +219,7 @@ $env:ANTHROPIC_AUTH_TOKEN = "your-PROXY_API_KEY"   # 未设置 PROXY_API_KEY 时
 仓库自带 `opencode.json` 配置文件，可用于本地兼容性验证：
 
 ```powershell
-opencode run --model qoder-cn-local/qwen3.7-max --variant high "reply OK"
+opencode run --model qoder-cn-local/qwen3.8-max --variant high "reply OK"
 ```
 
 如果你设置了 `PROXY_API_KEY`，需要把 `opencode.json` 里 `options.apiKey` 的 `not-used` 换成你的密钥。
@@ -250,18 +250,26 @@ $env:QODERCN_MAX_OUTPUT_TOKENS = "4096"
 
 也可在每次请求中通过 `reasoning_effort`、`context_window`、`max_tokens` 参数单独指定。
 
+其他环境变量：
+
+- `QODERCN_TIMEOUT_MS`：单次请求超时（毫秒）。代理提示词 + 模型排队可能耗时数分钟，建议保持较大值（默认 300000，`.env.example` 示例为 600000）
+- `QODERCN_CLI_TOOLS`：默认禁用 CLI 内置工具（追加 `--tools=`），让模型直接回答而不是在代理目录里跑文件/shell 代理循环。设为 `1` 可恢复 CLI 内置工具
+
 ## 流式输出
 
-当客户端请求 `stream: true` 且不包含工具参数时，本项目使用 CLI 的 `--output-format stream-json` 进行增量流式输出，并以 SSE 事件转发给本地客户端。
+当客户端请求 `stream: true` 时，本项目使用 CLI 的 `--output-format stream-json` 进行增量流式输出，并以 SSE 事件实时转发给本地客户端。
 
-当请求包含工具参数时，流式请求会自动降级为非流式响应，因为工具调用解析需要完整 JSON 输出。
+包含工具参数的请求同样实时流式：回复的文本部分经过"安全门控"立即转发——门控暂扣仍可能长成工具调用 JSON 块的尾部（未闭合或已闭合的 ` ```json ` 围栏、未配平或含 `"tool_calls"` 的 JSON 对象、末尾的反引号前缀）；流结束后暂扣部分被解析，工具调用以结构化 `tool_calls` / `tool_use` 块一次性补齐。因此 Claude Code 等代理客户端可以实时看到执行进度，同时结构化工具调用行为不变。
+
+例外：开启 `SERVER_TOOL_EXECUTION=1`（服务端执行工具）时，带工具的流式请求仍走缓冲路径。
 
 ## 当前限制
 
 - 工具调用通过 Prompt 格式指令 + 文本解析实现，非模型原生能力
-- 工具调用响应不走流式，始终为完整 JSON 返回
+- 流式模式下，工具调用的 JSON 部分在流末尾一次性补齐（不完整的 JSON 无法提前解析）
 - 每次请求启动一个新的 CLI 子进程
 - 如果模型输出非法 JSON 或拒绝使用工具格式，响应会降级为纯文本
+- 流式模式下，普通回复里未闭合的代码围栏会暂扣到围栏闭合后再显示（保守门控：宁可延迟显示，绝不把工具 JSON 泄漏为文本）
 
 ## 快速验证
 

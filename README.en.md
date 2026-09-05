@@ -186,9 +186,9 @@ If you manually change host behavior through environment variables or code edits
 
 ## Supported Models
 
-`qoder-cn`, `auto`, `qwen3.8-max-preview`, `qwen3.7-max`, `qwen3.7-plus`, `glm-5.2`, `kimi-k2.7-code`, `minimax-m2.7`, `qwen3.6-flash`, `deepseek-v4-pro`, `deepseek-v4-flash`
+`qoder-cn`, `auto`, `ultimate`, `performance`, `efficient`, `lite`, `cantus`, `qwen3.8-max`, `qwen3.8-flash`, `qwen3.7-max`, `qwen3.7-plus`, `kimi-k3`, `kimi-k2.7-code`, `glm-5.3`, `glm-5.3-flash`, `deepseek-v4-pro`, `deepseek-v4-flash`, `minimax-m3`
 
-Reasoning effort aliases: `qwen3.8-max-preview-effort-low`, `-medium`, `-high`, `-max`, and `qwen3.7-max-effort-low`, `-medium`, `-high`, `-max`
+Reasoning effort aliases: `qwen3.8-max-effort-low`, `-medium`, `-high`, `-max`, and `qwen3.7-max-effort-low`, `-medium`, `-high`, `-max`
 
 ## Local Client Adaptation
 
@@ -237,7 +237,7 @@ Do not append `/v1` to `ANTHROPIC_BASE_URL`; clients usually add API paths autom
 The repository includes `opencode.json` for local compatibility verification:
 
 ```powershell
-opencode run --model qoder-cn-local/qwen3.7-max --variant high "reply OK"
+opencode run --model qoder-cn-local/qwen3.8-max --variant high "reply OK"
 ```
 
 If you set `PROXY_API_KEY`, replace `not-used` in `opencode.json`'s
@@ -269,18 +269,24 @@ $env:QODERCN_MAX_OUTPUT_TOKENS = "4096"
 
 Or specify per request via `reasoning_effort`, `context_window`, and `max_tokens`.
 
+Other environment variables:
+
+- `QODERCN_TIMEOUT_MS`: per-request timeout in milliseconds. Proxy prompts plus model queueing can take several minutes, so keep this generous (default 300000; `.env.example` suggests 600000).
+- `QODERCN_CLI_TOOLS`: the CLI's built-in tools are disabled by default (`--tools=` is appended) so the model answers directly instead of running file/shell agent loops in the proxy's own directory. Set to `1` to keep the CLI's built-in tools.
+
 ## Streaming
 
-When a client requests `stream: true` without tools, this project uses the CLI's `--output-format stream-json` for incremental streaming and forwards text as local SSE events.
+When a client requests `stream: true`, this project uses the CLI's `--output-format stream-json` for incremental streaming and forwards text as local SSE events in real time — including requests that declare tools. For tool-declared requests the prose part streams immediately through a safety gate that withholds any tail which could still be or grow into the tool-call JSON block (unclosed or closed ` ```json ` fences, unbalanced or `"tool_calls"`-bearing JSON objects, trailing partial backticks); once the stream completes, the withheld tail is parsed and tool calls are appended as structured `tool_calls` / `tool_use` blocks. Agent clients such as Claude Code therefore show live progress while structured tool calling stays intact.
 
-When a request includes tool parameters, streaming is downgraded to a non-streaming response because tool-call parsing requires complete JSON output.
+Exception: with `SERVER_TOOL_EXECUTION=1` (server-side tool execution), tool-declared streaming requests stay on the buffered path.
 
 ## Current Limitations
 
 - Tool calls are implemented through prompt format instructions and text parsing, not native model capability
-- Tool-call responses are always non-streaming complete JSON responses
+- In streaming mode, the tool-call JSON part is appended once at the end of the stream (incomplete JSON cannot be parsed early)
 - Each request spawns a new CLI subprocess
 - If the model emits invalid JSON or refuses the tool format, the response falls back to plain text
+- In streaming mode, an unclosed fenced code block in a normal reply is withheld until its fence closes (conservative gate: delayed display, never leaked tool JSON)
 
 ## Quick Verification
 

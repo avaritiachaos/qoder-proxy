@@ -253,6 +253,15 @@ function buildCliArgs({
     '--dangerously-skip-permissions',
   ];
 
+  // The CLI is a full agent: with its built-in tools enabled it can turn a
+  // plain chat request into minutes of multi-turn file/shell loops inside the
+  // proxy's own working directory. The proxy's tool calling is simulated at
+  // the prompt level and never needs them, so disable them by default.
+  // Set QODERCN_CLI_TOOLS=1 to keep the CLI's built-in tools.
+  if (!process.env.QODERCN_CLI_TOOLS) {
+    args.push('--tools=');
+  }
+
   if (attachmentPath) {
     args.push('--attachment', attachmentPath);
   }
@@ -446,6 +455,8 @@ function runQoderCnCli({
     const stderrChunks = [];
     let settled = false;
     let timedOut = false;
+    let forceSettleTimer = null;
+    let exitFallbackTimer = null;
 
     const child = spawn(spawnSpec.command, finalArgs, {
       cwd: rootDir,
@@ -458,14 +469,25 @@ function runQoderCnCli({
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(forceSettleTimer);
+      clearTimeout(exitFallbackTimer);
       signal?.removeEventListener?.('abort', onAbort);
       fs.rmSync(attachmentPath, { force: true });
       fn(value);
     };
 
+    const timeoutError = () =>
+      new AppError(504, 'upstream_timeout', `${backend.command} request timed out.`);
+
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill();
+      // kill() does not guarantee 'close': if a descendant process keeps the
+      // stdio pipes open, 'close' never fires and the request would hang
+      // forever. Settle shortly after the kill deadline regardless.
+      forceSettleTimer = setTimeout(() => {
+        finish(reject, timeoutError());
+      }, 5000);
     }, timeoutMs);
 
     const onAbort = () => {
@@ -506,10 +528,10 @@ function runQoderCnCli({
       }
     });
 
-    child.on('close', (code) => {
+    const handleClose = (code) => {
       if (settled) return;
       if (timedOut) {
-        finish(reject, new AppError(504, 'upstream_timeout', `${backend.command} request timed out.`));
+        finish(reject, timeoutError());
         return;
       }
       if (code !== 0) {
@@ -526,6 +548,19 @@ function runQoderCnCli({
       } catch (error) {
         finish(reject, error);
       }
+    };
+
+    // 'exit' fires when the process exits; 'close' additionally waits for the
+    // stdio streams. If a descendant inherits the pipes, 'close' can lag
+    // forever — settle from 'exit' after a short grace period for output to
+    // flush.
+    child.on('exit', (code) => {
+      exitFallbackTimer = setTimeout(() => handleClose(code), 2000);
+    });
+
+    child.on('close', (code) => {
+      clearTimeout(exitFallbackTimer);
+      handleClose(code);
     });
   });
 }
@@ -554,6 +589,62 @@ function extractStreamDelta(record) {
   }
 
   return null;
+}
+
+/**
+ * Convert the CLI's stream-json assistant events into real text deltas.
+ *
+ * Verified against qodercli 1.1.41: each `assistant` event carries the
+ * cumulative snapshot of its message (same message.id, text blocks growing
+ * from the start — e.g. 38 chars, then 3176 chars), NOT an incremental
+ * delta. Forwarding extractStreamDelta() output directly would repeat text
+ * on every snapshot. This tracker aligns text blocks by index within a
+ * message and returns only the newly grown suffix of each block.
+ *
+ * Usage: call push(record) for every parsed stream-json line; it returns an
+ * array of non-empty delta strings (usually 0 or 1) to forward in order.
+ */
+function createStreamSnapshotTracker() {
+  let lastMessageId = null;
+  let blockLengths = [];
+
+  return {
+    push(record) {
+      if (!record || typeof record !== 'object' || record.type !== 'assistant') {
+        return [];
+      }
+
+      const messageId = record.message && record.message.id ? record.message.id : null;
+      if (messageId !== lastMessageId) {
+        lastMessageId = messageId;
+        blockLengths = [];
+      }
+
+      if (record.message && Array.isArray(record.message.content)) {
+        const texts = record.message.content
+          .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+          .map((b) => b.text);
+        if (texts.length) {
+          // Defensive: fewer text blocks than tracked means the message shape
+          // changed unexpectedly — restart alignment rather than skip text.
+          if (texts.length < blockLengths.length) blockLengths = [];
+          const deltas = [];
+          texts.forEach((text, index) => {
+            const previous = blockLengths[index] || 0;
+            blockLengths[index] = text.length;
+            if (text.length > previous) deltas.push(text.slice(previous));
+          });
+          return deltas;
+        }
+      }
+
+      // Fallback fields (not observed in practice, kept for resilience):
+      // their semantics are unknown, so forward them as-is per event.
+      if (typeof record.delta === 'string' && record.delta) return [record.delta];
+      if (typeof record.text === 'string' && record.text) return [record.text];
+      return [];
+    },
+  };
 }
 
 function runQoderCnCliStream({
@@ -614,11 +705,16 @@ function runQoderCnCliStream({
     const stderrChunks = [];
     let settled = false;
     let timedOut = false;
+    let forceSettleTimer = null;
+    let exitFallbackTimer = null;
     let lineBuffer = '';
     const fullTextParts = [];
     // Keep parsed records so we can fall back to a final `result`-style
     // record when no assistant deltas were recognized during streaming.
     const parsedRecords = [];
+    // stream-json assistant events are cumulative snapshots — convert them
+    // to real deltas so clients (and fullTextParts) never see repeated text.
+    const snapshotTracker = createStreamSnapshotTracker();
 
     const child = spawn(spawnSpec.command, finalArgs, {
       cwd: rootDir,
@@ -631,14 +727,25 @@ function runQoderCnCliStream({
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(forceSettleTimer);
+      clearTimeout(exitFallbackTimer);
       signal?.removeEventListener?.('abort', onAbort);
       fs.rmSync(attachmentPath, { force: true });
       fn(value);
     };
 
+    const timeoutError = () =>
+      new AppError(504, 'upstream_timeout', `${backend.command} request timed out.`);
+
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill();
+      // kill() does not guarantee 'close': if a descendant process keeps the
+      // stdio pipes open, 'close' never fires and the request would hang
+      // forever. Settle shortly after the kill deadline regardless.
+      forceSettleTimer = setTimeout(() => {
+        finish(reject, timeoutError());
+      }, 5000);
     }, timeoutMs);
 
     const onAbort = () => {
@@ -685,8 +792,7 @@ function runQoderCnCliStream({
         try {
           const record = JSON.parse(trimmed);
           parsedRecords.push(record);
-          const delta = extractStreamDelta(record);
-          if (delta) {
+          for (const delta of snapshotTracker.push(record)) {
             fullTextParts.push(delta);
             onDelta(delta);
           }
@@ -705,14 +811,13 @@ function runQoderCnCliStream({
       }
     });
 
-    child.on('close', (code) => {
+    const handleClose = (code) => {
       // Flush remaining buffer
       if (lineBuffer.trim()) {
         try {
           const record = JSON.parse(lineBuffer.trim());
           parsedRecords.push(record);
-          const delta = extractStreamDelta(record);
-          if (delta) {
+          for (const delta of snapshotTracker.push(record)) {
             fullTextParts.push(delta);
             onDelta(delta);
           }
@@ -723,7 +828,7 @@ function runQoderCnCliStream({
 
       if (settled) return;
       if (timedOut) {
-        finish(reject, new AppError(504, 'upstream_timeout', `${backend.command} request timed out.`));
+        finish(reject, timeoutError());
         return;
       }
       if (code !== 0) {
@@ -754,6 +859,19 @@ function runQoderCnCliStream({
       }
 
       finish(resolve, fullTextParts.join(''));
+    };
+
+    // 'exit' fires when the process exits; 'close' additionally waits for the
+    // stdio streams. If a descendant inherits the pipes, 'close' can lag
+    // forever — settle from 'exit' after a short grace period for output to
+    // flush.
+    child.on('exit', (code) => {
+      exitFallbackTimer = setTimeout(() => handleClose(code), 2000);
+    });
+
+    child.on('close', (code) => {
+      clearTimeout(exitFallbackTimer);
+      handleClose(code);
     });
   });
 }
@@ -764,6 +882,7 @@ module.exports = {
   buildPrompt,
   buildSpawnCommand,
   createPromptAttachment,
+  createStreamSnapshotTracker,
   extractAssistantContent,
   extractStreamDelta,
   fixLongAppendSystemPrompt,

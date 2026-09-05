@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-05
+
 ### Changed
 
 - **CLI built-in tools are now disabled by default** (`--tools=` is appended to the CLI invocation). The upstream CLI is a full agent: with its tools enabled, a plain chat request could turn into minutes of multi-turn file/shell loops inside the proxy's own working directory — easily outliving `QODERCN_TIMEOUT_MS` and surfacing in agent clients (e.g. Claude Code) as empty responses ("No response requested.") or `upstream_timeout` errors. Measured latency for the same model/prompt dropped from ~220s to ~3s. Set `QODERCN_CLI_TOOLS=1` to keep the CLI's built-in tools.

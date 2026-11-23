@@ -115,23 +115,374 @@ function extractBalancedJsonWithToolCalls(text) {
   return null;
 }
 
+const XML_TOOL_OPEN_RE =
+  /<tool_call(?:\s|>|\/)|<(?:antml:)?function_calls(?:\s|>)|<function(?:\s*=\s*[^\s>]+|\s+[^>]*?\bname\s*=)|<(?:antml:)?invoke\s+[^>]*?\bname\s*=/gi;
+
+const XML_FUNCTION_OPEN_RE =
+  /<(?:antml:)?(?:function(?:\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s/>]+))|\s+[^>]*?\bname\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s/>]+))[^>]*?)|invoke\s+[^>]*?\bname\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s/>]+))[^>]*?)\s*(\/)?>/gi;
+
+const XML_PARAM_OPEN_RE =
+  /<(?:antml:)?parameter(?:\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))|\s+[^>]*?\bname\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))[^>]*?)\s*>/gi;
+
+const XML_PARAM_CLOSE_RE = /<\/(?:antml:)?parameter\s*>/gi;
+
+function isIndexInRanges(index, ranges) {
+  for (const [start, end] of ranges) {
+    if (index >= start && index < end) return true;
+  }
+  return false;
+}
+
 /**
- * Parse CLI output to detect tool calls.
- *
- * Returns:
- *   { type: 'text', content: <original text> }  — when no valid tool_calls found
- *   { type: 'tool_calls', toolCalls: <array>, prefixText: <text before JSON> }  — when valid tool_calls found
- *
- * The parser is robust: it handles markdown ```json blocks, trailing whitespace,
- * and malformed JSON with a fallback to plain text.
+ * Scan closed non-tool code fences so XML tool-call detection ignores ordinary
+ * code examples (e.g. ```js, ```html, ```markdown, or ```xml without tool tags).
  */
-function parseToolCallOutput(text) {
-  if (!text || typeof text !== 'string') {
-    return { type: 'text', content: text || '' };
+function findOrdinaryCodeFenceRanges(text) {
+  const ranges = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    const openIdx = text.indexOf('```', cursor);
+    if (openIdx === -1) break;
+    const lineEnd = text.indexOf('\n', openIdx + 3);
+    if (lineEnd === -1) break;
+    const lang = text.slice(openIdx + 3, lineEnd).trim().toLowerCase();
+    const closeIdx = text.indexOf('```', lineEnd + 1);
+    if (closeIdx === -1) break;
+
+    const body = text.slice(lineEnd + 1, closeIdx);
+    const isPossibleToolFence =
+      lang === '' ||
+      lang === 'json' ||
+      (lang === 'xml' && hasXmlToolOpenMarker(body));
+
+    if (!isPossibleToolFence) {
+      ranges.push([openIdx, closeIdx + 3]);
+    }
+    cursor = closeIdx + 3;
+  }
+  return ranges;
+}
+
+function hasXmlToolOpenMarker(text) {
+  XML_TOOL_OPEN_RE.lastIndex = 0;
+  return XML_TOOL_OPEN_RE.test(text);
+}
+
+function buildToolSchemaMap(tools) {
+  const map = new Map();
+  if (!Array.isArray(tools)) return map;
+  for (const tool of tools) {
+    if (!tool || typeof tool !== 'object') continue;
+    const func = tool.function || tool;
+    const name = func.name || tool.name;
+    const parameters = func.parameters || func.input_schema || null;
+    if (name && typeof name === 'string') {
+      map.set(name, parameters);
+    }
+  }
+  return map;
+}
+
+function unwrapXmlParamValue(raw) {
+  let value = raw;
+  if (value.startsWith('\r\n')) value = value.slice(2);
+  else if (value.startsWith('\n')) value = value.slice(1);
+  if (value.endsWith('\r\n')) value = value.slice(0, -2);
+  else if (value.endsWith('\n')) value = value.slice(0, -1);
+  return value;
+}
+
+function matchesSchemaType(value, types) {
+  for (const t of types) {
+    if (t === 'boolean' && typeof value === 'boolean') return true;
+    if (t === 'integer' && typeof value === 'number' && Number.isInteger(value)) return true;
+    if (t === 'number' && typeof value === 'number' && Number.isFinite(value)) return true;
+    if (t === 'array' && Array.isArray(value)) return true;
+    if (t === 'object' && value !== null && typeof value === 'object' && !Array.isArray(value)) return true;
+    if (t === 'null' && value === null) return true;
+  }
+  return false;
+}
+
+function coerceXmlParamValue(raw, paramSchema) {
+  const value = unwrapXmlParamValue(raw);
+  const trimmed = value.trim();
+
+  if (paramSchema && typeof paramSchema === 'object') {
+    const rawType = paramSchema.type;
+    const types = Array.isArray(rawType) ? rawType : rawType ? [rawType] : [];
+    if (types.length === 1 && types[0] === 'string') {
+      return value;
+    }
+    if (types.length > 0 && trimmed) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (matchesSchemaType(parsed, types)) {
+          return parsed;
+        }
+      } catch (_) {
+        // Keep raw string when the value is not valid JSON for the expected type.
+      }
+      return value;
+    }
   }
 
+  if (!trimmed) return value;
+  if (trimmed === 'true') return true;
+  if (trimmed === 'false') return false;
+  if (trimmed === 'null') return null;
+  if (/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(trimmed)) {
+    const num = Number(trimmed);
+    const isIntLike = !trimmed.includes('.') && !/[eE]/.test(trimmed);
+    if (Number.isFinite(num) && (!isIntLike || Number.isSafeInteger(num))) {
+      return num;
+    }
+  }
+  if (
+    (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+    (trimmed.startsWith('[') && trimmed.endsWith(']'))
+  ) {
+    try {
+      return JSON.parse(trimmed);
+    } catch (_) {
+      // Fall through to raw string.
+    }
+  }
+  return value;
+}
+
+function parseXmlParameters(body, toolSchema) {
+  const properties = toolSchema && typeof toolSchema.properties === 'object' ? toolSchema.properties : null;
+  const openTags = [];
+  XML_PARAM_OPEN_RE.lastIndex = 0;
+  let match;
+  while ((match = XML_PARAM_OPEN_RE.exec(body)) !== null) {
+    const name = match[1] || match[2] || match[3] || match[4] || match[5] || match[6];
+    if (!name) continue;
+    openTags.push({
+      name: name.trim(),
+      start: match.index,
+      end: match.index + match[0].length,
+    });
+  }
+
+  if (openTags.length === 0) {
+    return { args: {}, hasUnclosedParam: false };
+  }
+
+  const args = {};
+  let hasUnclosedParam = false;
+  for (let i = 0; i < openTags.length; i++) {
+    const current = openTags[i];
+    const searchEnd = i + 1 < openTags.length ? openTags[i + 1].start : body.length;
+    const segment = body.slice(current.end, searchEnd);
+
+    // Use the last closing </parameter> before the next <parameter> so raw code
+    // inside a parameter that mentions "</parameter>" does not truncate early.
+    XML_PARAM_CLOSE_RE.lastIndex = 0;
+    let lastClose = null;
+    let closeMatch;
+    while ((closeMatch = XML_PARAM_CLOSE_RE.exec(segment)) !== null) {
+      lastClose = closeMatch;
+    }
+    if (!lastClose) {
+      hasUnclosedParam = true;
+      continue;
+    }
+
+    const rawValue = segment.slice(0, lastClose.index);
+    const paramSchema = properties ? properties[current.name] : null;
+    args[current.name] = coerceXmlParamValue(rawValue, paramSchema);
+  }
+
+  return { args, hasUnclosedParam };
+}
+
+function normalizeParsedJsonCall(call) {
+  if (!call || typeof call !== 'object') return null;
+  if (!call.name || typeof call.name !== 'string') return null;
+  let args = call.arguments !== undefined ? call.arguments : call.parameters;
+  if (typeof args === 'string') {
+    try {
+      const parsed = JSON.parse(args);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        args = parsed;
+      } else {
+        return null;
+      }
+    } catch (_) {
+      return null;
+    }
+  }
+  if (args !== undefined && (args === null || typeof args !== 'object' || Array.isArray(args))) {
+    return null;
+  }
+  return { name: call.name, arguments: args || {} };
+}
+
+function parseXmlFunctionTags(body, schemaMap, ignoredRanges = null, offset = 0) {
+  const calls = [];
+  let firstMatchStart = -1;
+  const openRe = new RegExp(XML_FUNCTION_OPEN_RE.source, 'gi');
+  let match;
+  while ((match = openRe.exec(body)) !== null) {
+    if (ignoredRanges && isIndexInRanges(offset + match.index, ignoredRanges)) {
+      continue;
+    }
+    const tagText = match[0];
+    const name = (
+      match[1] ||
+      match[2] ||
+      match[3] ||
+      match[4] ||
+      match[5] ||
+      match[6] ||
+      match[7] ||
+      match[8] ||
+      match[9] ||
+      ''
+    ).trim();
+    if (!name) continue;
+    const isSelfClosing = Boolean(match[10]);
+    const isInvoke = /^<(?:antml:)?invoke\b/i.test(tagText);
+    const contentStart = match.index + tagText.length;
+
+    if (isSelfClosing) {
+      if (firstMatchStart === -1) firstMatchStart = offset + match.index;
+      calls.push({ name, arguments: {} });
+      continue;
+    }
+
+    const closeRe = isInvoke ? /<\/(?:antml:)?invoke\s*>/gi : /<\/(?:antml:)?function\s*>/gi;
+    closeRe.lastIndex = contentStart;
+    const closeMatch = closeRe.exec(body);
+    if (!closeMatch) {
+      // Do not execute truncated/unclosed function calls.
+      continue;
+    }
+
+    const innerBody = body.slice(contentStart, closeMatch.index);
+    const { args, hasUnclosedParam } = parseXmlParameters(innerBody, schemaMap.get(name));
+    if (hasUnclosedParam) {
+      continue;
+    }
+
+    if (firstMatchStart === -1) firstMatchStart = offset + match.index;
+    calls.push({ name, arguments: args });
+    openRe.lastIndex = closeMatch.index + closeMatch[0].length;
+  }
+  return { calls, firstMatchStart };
+}
+
+function parseXmlInnerPayload(inner, schemaMap) {
+  const { calls: fnCalls } = parseXmlFunctionTags(inner, schemaMap);
+  if (fnCalls.length > 0) return fnCalls;
+
+  // Fallback for Hermes/Qwen JSON-inside-<tool_call> format:
+  // <tool_call>{"name": "bash", "arguments": {"command": "ls"}}</tool_call>
+  const trimmed = inner.trim();
+  if (!trimmed.startsWith('{')) return [];
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== 'object') return [];
+    if (Array.isArray(parsed.tool_calls)) {
+      return parsed.tool_calls.map(normalizeParsedJsonCall).filter(Boolean);
+    }
+    const single = normalizeParsedJsonCall(parsed);
+    return single ? [single] : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function expandMatchStartToEnclosingXmlFence(text, matchStart) {
+  // If the first XML tool tag sits immediately inside a ```xml or untagged ```
+  // fence, point matchStart at the opening fence so the fence itself is never
+  // emitted as visible prefix text.
+  const before = text.slice(0, matchStart);
+  const fenceMatch = before.match(/(?:^|\n)(```(?:xml)?[ \t]*\r?\n[ \t]*)$/i);
+  if (!fenceMatch) return matchStart;
+  const fenceStart = before.length - fenceMatch[1].length;
+  // Confirm a closing ``` exists after matchStart.
+  if (text.indexOf('```', matchStart) !== -1) {
+    return fenceStart;
+  }
+  return matchStart;
+}
+
+/**
+ * Parse XML-formatted tool calls emitted when a model reverts to native XML
+ * weights despite the JSON [Tool Protocol]:
+ *   1. <tool_call><function=name><parameter=k>v</parameter></function></tool_call>
+ *   2. <tool_call>{"name": "...", "arguments": {...}}</tool_call>
+ *   3. <function_calls><invoke name="..."><parameter name="k">v</parameter></invoke></function_calls>
+ *   4. Bare <function=name>...</function> or <invoke name="...">...</invoke>
+ */
+function parseXmlToolCalls(text, tools) {
+  if (!text || !hasXmlToolOpenMarker(text)) return null;
+
+  const ignoredRanges = findOrdinaryCodeFenceRanges(text);
+  const schemaMap = buildToolSchemaMap(tools);
+  const toolCalls = [];
+  let firstMatchStart = -1;
+
+  // 1) Wrapper blocks: <tool_call>...</tool_call> and <function_calls>...</function_calls>
+  const wrapperRe = /<(tool_call|(?:antml:)?function_calls)(?:\s[^>]*)?>/gi;
+  let wrapperMatch;
+  while ((wrapperMatch = wrapperRe.exec(text)) !== null) {
+    if (isIndexInRanges(wrapperMatch.index, ignoredRanges)) continue;
+    const tagName = wrapperMatch[1];
+    const bodyStart = wrapperMatch.index + wrapperMatch[0].length;
+    const escapedTag = tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const closeRe = new RegExp(`<\\/${escapedTag}\\s*>`, 'gi');
+    closeRe.lastIndex = bodyStart;
+    let closeMatch = closeRe.exec(text);
+    let parsed = [];
+
+    // Try matching closing tags in order; if a parameter value itself contains
+    // a literal closing tag (e.g. editing parser code), keep advancing to the
+    // outer closing tag.
+    while (closeMatch) {
+      const inner = text.slice(bodyStart, closeMatch.index);
+      parsed = parseXmlInnerPayload(inner, schemaMap);
+      if (parsed.length > 0) break;
+      closeMatch = closeRe.exec(text);
+    }
+
+    // If the outer </tool_call> was dropped at EOF, still allow parsing complete
+    // inner </function> / </invoke> calls or valid JSON up to EOF.
+    if (parsed.length === 0 && !closeMatch) {
+      parsed = parseXmlInnerPayload(text.slice(bodyStart), schemaMap);
+    }
+
+    if (parsed.length > 0) {
+      if (firstMatchStart === -1) firstMatchStart = wrapperMatch.index;
+      toolCalls.push(...parsed);
+      wrapperRe.lastIndex = closeMatch ? closeMatch.index + closeMatch[0].length : text.length;
+    }
+  }
+
+  // 2) Bare <function=...> / <invoke name="..."> outside wrapper tags
+  if (toolCalls.length === 0) {
+    const bare = parseXmlFunctionTags(text, schemaMap, ignoredRanges, 0);
+    if (bare.calls.length > 0) {
+      toolCalls.push(...bare.calls);
+      firstMatchStart = bare.firstMatchStart;
+    }
+  }
+
+  if (toolCalls.length === 0 || firstMatchStart === -1) {
+    return null;
+  }
+
+  const matchStart = expandMatchStartToEnclosingXmlFence(text, firstMatchStart);
+  const prefixText = text.slice(0, matchStart).trim();
+  return { type: 'tool_calls', toolCalls, prefixText, matchStart };
+}
+
+function parseJsonToolCalls(text) {
   // Try to find a ```json ... ``` block
-  const jsonBlockRe = /```json\s*\n([\s\S]*?)\n```/;
+  const jsonBlockRe = /```json\s*\r?\n([\s\S]*?)\r?\n```/;
   const blockMatch = text.match(jsonBlockRe);
 
   let jsonString = null;
@@ -158,7 +509,7 @@ function parseToolCallOutput(text) {
   }
 
   if (!jsonString) {
-    return { type: 'text', content: text };
+    return null;
   }
 
   let parsed;
@@ -173,17 +524,16 @@ function parseToolCallOutput(text) {
       try {
         parsed = JSON.parse(jsonString.slice(firstBrace, lastBrace + 1));
       } catch (_) {
-        // Still can't parse — fallback to text
-        return { type: 'text', content: text };
+        return null;
       }
     } else {
-      return { type: 'text', content: text };
+      return null;
     }
   }
 
   // Validate the parsed structure
   if (!parsed || !Array.isArray(parsed.tool_calls)) {
-    return { type: 'text', content: text };
+    return null;
   }
 
   // Validate each tool call has required fields
@@ -196,7 +546,7 @@ function parseToolCallOutput(text) {
   });
 
   if (validCalls.length === 0) {
-    return { type: 'text', content: text };
+    return null;
   }
 
   // Normalize arguments: ensure each call has an arguments object
@@ -209,24 +559,105 @@ function parseToolCallOutput(text) {
 }
 
 /**
+ * Parse CLI output to detect tool calls.
+ *
+ * Returns:
+ *   { type: 'text', content: <original text> }  — when no valid tool_calls found
+ *   { type: 'tool_calls', toolCalls: <array>, prefixText: <text before payload>, matchStart: <number> }
+ *
+ * Handles markdown ```json blocks, bare {"tool_calls": ...} JSON, and XML
+ * tool-call formats (<tool_call><function=...><parameter=...>, Hermes JSON
+ * inside <tool_call>, and Anthropic <function_calls>/<invoke>).
+ */
+function parseToolCallOutput(text, tools) {
+  if (!text || typeof text !== 'string') {
+    return { type: 'text', content: text || '' };
+  }
+
+  const jsonResult = parseJsonToolCalls(text);
+  const xmlResult = parseXmlToolCalls(text, tools);
+
+  if (jsonResult && xmlResult) {
+    // Pick whichever tool-call representation starts earlier so a tool call
+    // whose string argument mentions the other format still parses cleanly.
+    return jsonResult.matchStart <= xmlResult.matchStart ? jsonResult : xmlResult;
+  }
+  if (jsonResult) return jsonResult;
+  if (xmlResult) return xmlResult;
+
+  return { type: 'text', content: text };
+}
+
+/**
+ * Detect whether plain-text fallback output still contains tool-call-like
+ * markup (outside ordinary code fences) for diagnostic logging.
+ */
+function hasUnparsedToolCallMarkup(text) {
+  if (!text || typeof text !== 'string') return false;
+  const ignoredRanges = findOrdinaryCodeFenceRanges(text);
+  XML_TOOL_OPEN_RE.lastIndex = 0;
+  let match;
+  while ((match = XML_TOOL_OPEN_RE.exec(text)) !== null) {
+    if (!isIndexInRanges(match.index, ignoredRanges)) return true;
+  }
+  return false;
+}
+
+function findTrailingPartialXmlToolTag(text, limit, ignoredRanges) {
+  const slice = text.slice(0, limit);
+  const lastLt = slice.lastIndexOf('<');
+  if (lastLt === -1) return limit;
+  if (isIndexInRanges(lastLt, ignoredRanges)) return limit;
+  // Once '>' has closed the tag, it is either matched by XML_TOOL_OPEN_RE
+  // or is an ordinary tag like <div> / <functional>.
+  if (slice.indexOf('>', lastLt) !== -1) return limit;
+
+  const tail = slice.slice(lastLt);
+  const tailLower = tail.toLowerCase();
+  const staticPrefixes = [
+    '<tool_call',
+    '<function=',
+    '<function ',
+    '<function_calls',
+    '<invoke ',
+    '<antml:function_calls',
+    '<antml:invoke ',
+  ];
+  if (staticPrefixes.some((prefix) => prefix.startsWith(tailLower))) {
+    return lastLt;
+  }
+  if (
+    /^<tool_call(?:\s[^>]*|\/)?$/i.test(tail) ||
+    /^<(?:antml:)?function_calls(?:\s[^>]*)?$/i.test(tail) ||
+    /^<function(?:\s*=\s*[^>]*|\s+[^>]*)?$/i.test(tail) ||
+    /^<(?:antml:)?invoke\s+[^>]*$/i.test(tail)
+  ) {
+    return lastLt;
+  }
+  return limit;
+}
+
+/**
  * Compute how much of a partially streamed text is safe to forward to the
  * client right now.
  *
  * Tool calls are simulated at the prompt level: the model emits a ```json
- * fence (or a bare JSON object) containing {"tool_calls": [...]} that must be
- * parsed as a whole and returned as structured tool_use/tool_calls blocks —
- * never as visible text. While streaming we therefore hold back any tail
- * that could still be or grow into such a block:
+ * fence, a bare JSON object containing {"tool_calls": [...]}, or an XML
+ * tool-call block (<tool_call>, <function=...>, <function_calls>, <invoke>)
+ * that must be parsed as a whole and returned as structured tool_use /
+ * tool_calls blocks — never as visible text. While streaming we therefore
+ * hold back any tail that could still be or grow into such a block:
  *
- *   1. any unclosed ``` fence (its language tag may still be arriving), and
- *      any CLOSED fence tagged json/untagged — a complete tool block must
- *      stay withheld even after its fence closes, since the stream has not
- *      ended yet and the block is payload, not prose. Fences with another
- *      explicit language (```js, ```python …) are ordinary code samples and
- *      pass through once closed.
+ *   1. any unclosed ``` fence (its language tag may still be arriving), any
+ *      CLOSED fence tagged json/untagged, and any closed xml fence containing
+ *      an XML tool-call tag. Fences with another explicit language (```js,
+ *      ```python …) or ordinary xml snippets pass through once closed.
  *   2. an unclosed outermost { ... } structure, and any closed outermost
  *      object containing "tool_calls" (string-aware brace counting).
- *   3. a trailing run of 1-2 backticks (a ``` marker arriving in pieces).
+ *   3. any XML tool-call opening tag (<tool_call, <function=, <function_calls,
+ *      <invoke name=...) outside ordinary code fences, plus any trailing
+ *      partial prefix of such a tag arriving across chunks.
+ *   4. a trailing run of 1-2 backticks (a ``` marker arriving in pieces).
  *
  * Everything before the withheld region can never be part of the tool-call
  * payload and is streamed immediately. The withheld tail is resolved once
@@ -235,8 +666,9 @@ function parseToolCallOutput(text) {
 function findStreamingSafePrefixLength(text) {
   if (!text) return 0;
   let safeEnd = text.length;
+  const ordinaryFenceRanges = [];
 
-  // 1) Fence scan. Closed non-json fences are passed over; anything else
+  // 1) Fence scan. Closed non-tool fences are passed over; anything else
   // caps the safe region at the fence start.
   let cursor = 0;
   while (cursor < safeEnd) {
@@ -249,7 +681,7 @@ function findStreamingSafePrefixLength(text) {
       safeEnd = Math.min(safeEnd, openIdx);
       break;
     }
-    const lang = text.slice(openIdx + 3, lineEnd).trim();
+    const lang = text.slice(openIdx + 3, lineEnd).trim().toLowerCase();
     const closeIdx = text.indexOf('```', lineEnd + 1);
     if (closeIdx === -1) {
       // Unclosed fence — its content is still growing.
@@ -262,7 +694,14 @@ function findStreamingSafePrefixLength(text) {
       safeEnd = Math.min(safeEnd, openIdx);
       break;
     }
+    if (lang === 'xml' && hasXmlToolOpenMarker(text.slice(lineEnd + 1, closeIdx))) {
+      // Closed ```xml fence carrying an XML tool call — withhold from the
+      // fence start so neither the fence nor the XML leaks.
+      safeEnd = Math.min(safeEnd, openIdx);
+      break;
+    }
     // Ordinary code sample in another language — skip past it.
+    ordinaryFenceRanges.push([openIdx, closeIdx + 3]);
     cursor = closeIdx + 3;
   }
 
@@ -307,7 +746,22 @@ function findStreamingSafePrefixLength(text) {
     safeEnd = Math.min(safeEnd, outerBraceStart);
   }
 
-  // 3) A trailing run of 1-2 backticks could be the start of a ``` marker
+  // 3) XML tool-call scan outside ordinary code fences: withhold from the
+  // first XML tool-call opening tag, or from a trailing partial tag prefix
+  // (e.g. "<", "<tool_", "<function") split across chunks.
+  const xmlOpenRe = new RegExp(XML_TOOL_OPEN_RE.source, 'gi');
+  let xmlMatch;
+  while ((xmlMatch = xmlOpenRe.exec(text)) !== null) {
+    if (xmlMatch.index >= safeEnd) break;
+    if (isIndexInRanges(xmlMatch.index, ordinaryFenceRanges)) continue;
+    safeEnd = Math.min(safeEnd, xmlMatch.index);
+    break;
+  }
+  if (safeEnd > 0) {
+    safeEnd = Math.min(safeEnd, findTrailingPartialXmlToolTag(text, safeEnd, ordinaryFenceRanges));
+  }
+
+  // 4) A trailing run of 1-2 backticks could be the start of a ``` marker
   // split across chunks — hold them back until the next chunk disambiguates.
   if (safeEnd > 0) {
     const tailMatch = text.slice(0, safeEnd).match(/`{1,2}$/);
@@ -403,6 +857,7 @@ module.exports = {
   findStreamingSafePrefixLength,
   formatToolResultForPrompt,
   generateCallId,
+  hasUnparsedToolCallMarkup,
   normalizeAnthropicTools,
   normalizeOpenAiTools,
   parseToolCallOutput,

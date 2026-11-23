@@ -5,6 +5,7 @@ const {
   findStreamingSafePrefixLength,
   parseToolCallOutput,
   generateCallId,
+  hasUnparsedToolCallMarkup,
   formatToolResultForPrompt,
   normalizeOpenAiTools,
   normalizeAnthropicTools,
@@ -299,4 +300,247 @@ test('gated streaming never leaks tool-call JSON: incremental simulation', () =>
   const parsed = parseToolCallOutput(finalText);
   assert.equal(parsed.type, 'tool_calls');
   assert.equal(finalText.slice(0, parsed.matchStart), forwarded);
+});
+
+// --- XML tool-call parsing & streaming gate tests (Issue #13) ---
+
+test('parseToolCallOutput parses <tool_call><function=...><parameter=...> with prose prefix and shell heredoc', () => {
+  const output = [
+    '我来查一下当前目录并写入测试脚本。',
+    '<tool_call>',
+    '<function=bash>',
+    '<parameter=command>',
+    'cat <<\'EOF\' > /tmp/check.sh',
+    'if [ "$a" -lt 10 ]; then echo "ok < 10"; fi',
+    'EOF',
+    'ls -la',
+    '</parameter>',
+    '<parameter=timeout>',
+    '30',
+    '</parameter>',
+    '</function>',
+    '</tool_call>',
+  ].join('\n');
+
+  const result = parseToolCallOutput(output);
+  assert.equal(result.type, 'tool_calls');
+  assert.equal(result.prefixText, '我来查一下当前目录并写入测试脚本。');
+  assert.equal(output.slice(result.matchStart).startsWith('<tool_call>'), true);
+  assert.equal(result.toolCalls.length, 1);
+  assert.equal(result.toolCalls[0].name, 'bash');
+  assert.deepEqual(result.toolCalls[0].arguments, {
+    command: 'cat <<\'EOF\' > /tmp/check.sh\nif [ "$a" -lt 10 ]; then echo "ok < 10"; fi\nEOF\nls -la',
+    timeout: 30,
+  });
+});
+
+test('parseToolCallOutput parses multiple parallel <tool_call> blocks', () => {
+  const output = [
+    'Checking both files.',
+    '<tool_call><function=read_file><parameter=path>a.txt</parameter></function></tool_call>',
+    '<tool_call><function=read_file><parameter=path>b.txt</parameter></function></tool_call>',
+  ].join('\n');
+
+  const result = parseToolCallOutput(output);
+  assert.equal(result.type, 'tool_calls');
+  assert.equal(result.prefixText, 'Checking both files.');
+  assert.equal(result.toolCalls.length, 2);
+  assert.deepEqual(result.toolCalls[0], { name: 'read_file', arguments: { path: 'a.txt' } });
+  assert.deepEqual(result.toolCalls[1], { name: 'read_file', arguments: { path: 'b.txt' } });
+});
+
+test('parseToolCallOutput preserves leading indentation in XML parameter values', () => {
+  const output =
+    '<tool_call>\n<function=edit_file>\n<parameter=old_string>\n    const x = 1;\n    const y = 2;\n</parameter>\n</function>\n</tool_call>';
+  const result = parseToolCallOutput(output);
+  assert.equal(result.type, 'tool_calls');
+  assert.equal(result.toolCalls[0].arguments.old_string, '    const x = 1;\n    const y = 2;');
+});
+
+test('parseToolCallOutput respects tool schema types when coercing XML parameters', () => {
+  const tools = [
+    {
+      name: 'grep',
+      parameters: {
+        type: 'object',
+        properties: {
+          pattern: { type: 'string' },
+          limit: { type: 'integer' },
+          case_sensitive: { type: 'boolean' },
+          paths: { type: 'array' },
+        },
+      },
+    },
+  ];
+  const output = [
+    '<tool_call>',
+    '<function=grep>',
+    '<parameter=pattern>12345</parameter>',
+    '<parameter=limit>25</parameter>',
+    '<parameter=case_sensitive>true</parameter>',
+    '<parameter=paths>["src", "test"]</parameter>',
+    '</function>',
+    '</tool_call>',
+  ].join('\n');
+
+  const result = parseToolCallOutput(output, tools);
+  assert.equal(result.type, 'tool_calls');
+  assert.deepEqual(result.toolCalls[0].arguments, {
+    pattern: '12345', // stays string because schema says string
+    limit: 25,
+    case_sensitive: true,
+    paths: ['src', 'test'],
+  });
+});
+
+test('parseToolCallOutput keeps large integer IDs as strings without schema', () => {
+  const output = '<tool_call><function=get_item><parameter=id>9007199254740993123</parameter></function></tool_call>';
+  const result = parseToolCallOutput(output);
+  assert.equal(result.type, 'tool_calls');
+  assert.equal(result.toolCalls[0].arguments.id, '9007199254740993123');
+});
+
+test('parseToolCallOutput parses Hermes JSON inside <tool_call> tags', () => {
+  const output = 'Let me check.\n<tool_call>\n{"name": "bash", "arguments": {"command": "pwd"}}\n</tool_call>';
+  const result = parseToolCallOutput(output);
+  assert.equal(result.type, 'tool_calls');
+  assert.equal(result.prefixText, 'Let me check.');
+  assert.equal(output.slice(0, result.matchStart), 'Let me check.\n');
+  assert.deepEqual(result.toolCalls, [{ name: 'bash', arguments: { command: 'pwd' } }]);
+});
+
+test('parseToolCallOutput parses Anthropic <function_calls>/<invoke> and antml: variants', () => {
+  const output = [
+    'Running command.',
+    '<antml:function_calls>',
+    '<antml:invoke name="bash">',
+    '<antml:parameter name="command" string="true">git status</antml:parameter>',
+    '</antml:invoke>',
+    '</antml:function_calls>',
+  ].join('\n');
+
+  const result = parseToolCallOutput(output);
+  assert.equal(result.type, 'tool_calls');
+  assert.equal(result.prefixText, 'Running command.');
+  assert.deepEqual(result.toolCalls, [{ name: 'bash', arguments: { command: 'git status' } }]);
+});
+
+test('parseToolCallOutput parses bare <function=...> and zero-argument functions', () => {
+  const bare = '<function=list_files></function>';
+  const res1 = parseToolCallOutput(bare);
+  assert.equal(res1.type, 'tool_calls');
+  assert.deepEqual(res1.toolCalls, [{ name: 'list_files', arguments: {} }]);
+
+  const selfClosing = '<tool_call><function=list_files/></tool_call>';
+  const res2 = parseToolCallOutput(selfClosing);
+  assert.equal(res2.type, 'tool_calls');
+  assert.deepEqual(res2.toolCalls, [{ name: 'list_files', arguments: {} }]);
+});
+
+test('parseToolCallOutput recovers when outer </tool_call> is missing at EOF but rejects truncated parameters', () => {
+  const missingOuterClose =
+    '<tool_call>\n<function=bash>\n<parameter=command>echo ok</parameter>\n</function>';
+  const ok = parseToolCallOutput(missingOuterClose);
+  assert.equal(ok.type, 'tool_calls');
+  assert.deepEqual(ok.toolCalls, [{ name: 'bash', arguments: { command: 'echo ok' } }]);
+
+  // Truncated mid-parameter must NOT execute a half-written command.
+  const truncatedParam = '<tool_call>\n<function=bash>\n<parameter=command>rm -rf /tmp/foo';
+  const rejected = parseToolCallOutput(truncatedParam);
+  assert.equal(rejected.type, 'text');
+  assert.equal(hasUnparsedToolCallMarkup(truncatedParam), true);
+});
+
+test('parseToolCallOutput parses XML tool calls inside ```xml fence with matchStart at fence', () => {
+  const output =
+    'Checking now.\n```xml\n<tool_call>\n<function=bash><parameter=command>pwd</parameter></function>\n</tool_call>\n```';
+  const result = parseToolCallOutput(output);
+  assert.equal(result.type, 'tool_calls');
+  assert.equal(result.prefixText, 'Checking now.');
+  assert.equal(output.slice(0, result.matchStart), 'Checking now.\n');
+  assert.equal(output.slice(result.matchStart).startsWith('```xml'), true);
+});
+
+test('parseToolCallOutput ignores XML tool tags inside ordinary code fences', () => {
+  const output =
+    'Here is an example:\n```js\nconst sample = "<tool_call><function=bash><parameter=command>ls</parameter></function></tool_call>";\n```\nDone.';
+  const result = parseToolCallOutput(output);
+  assert.equal(result.type, 'text');
+  assert.equal(hasUnparsedToolCallMarkup(output), false);
+});
+
+test('parseToolCallOutput handles literal </tool_call> text inside an XML parameter value', () => {
+  const output =
+    '<tool_call><function=write_file><parameter=content>const tag = "</tool_call>";</parameter></function></tool_call>';
+  const result = parseToolCallOutput(output);
+  assert.equal(result.type, 'tool_calls');
+  assert.deepEqual(result.toolCalls, [
+    { name: 'write_file', arguments: { content: 'const tag = "</tool_call>";' } },
+  ]);
+});
+
+test('parseToolCallOutput prefers whichever tool format starts earlier when payloads reference the other format', () => {
+  const xmlWritingJson =
+    '<tool_call><function=write_file><parameter=content>```json\n{"tool_calls": [{"name": "fake"}]}\n```</parameter></function></tool_call>';
+  const r1 = parseToolCallOutput(xmlWritingJson);
+  assert.equal(r1.type, 'tool_calls');
+  assert.equal(r1.toolCalls[0].name, 'write_file');
+
+  const jsonWritingXml =
+    '```json\n{"tool_calls": [{"name": "write_file", "arguments": {"content": "<tool_call><function=fake></function></tool_call>"}}]}\n```';
+  const r2 = parseToolCallOutput(jsonWritingXml);
+  assert.equal(r2.type, 'tool_calls');
+  assert.equal(r2.toolCalls[0].name, 'write_file');
+});
+
+test('findStreamingSafePrefixLength withholds XML tool tags and partial prefixes without blocking ordinary markup', () => {
+  assert.equal(findStreamingSafePrefixLength('a < b and c > d'), 'a < b and c > d'.length);
+  assert.equal(findStreamingSafePrefixLength('use <div>hello</div> and <i>italic</i>'), 'use <div>hello</div> and <i>italic</i>'.length);
+  assert.equal(findStreamingSafePrefixLength('In C++, <functional> is a header.'), 'In C++, <functional> is a header.'.length);
+  assert.equal(
+    findStreamingSafePrefixLength('before\n```xml\n<project><name>demo</name></project>\n```\nafter'),
+    'before\n```xml\n<project><name>demo</name></project>\n```\nafter'.length
+  );
+  assert.equal(
+    findStreamingSafePrefixLength('before\n```js\nconst s = "<tool_call>";\n```\nafter'),
+    'before\n```js\nconst s = "<tool_call>";\n```\nafter'.length
+  );
+
+  // Partial prefixes at the end of the chunk are held back.
+  assert.equal(findStreamingSafePrefixLength('hi <'), 'hi '.length);
+  assert.equal(findStreamingSafePrefixLength('hi <tool_c'), 'hi '.length);
+  assert.equal(findStreamingSafePrefixLength('hi <function='), 'hi '.length);
+  assert.equal(findStreamingSafePrefixLength('hi <antml:inv'), 'hi '.length);
+
+  // Complete XML tool opening tags stay withheld until stream end.
+  assert.equal(
+    findStreamingSafePrefixLength('我来查一下。\n<tool_call><function=bash><parameter=command>ls</parameter></function></tool_call>'),
+    '我来查一下。\n'.length
+  );
+});
+
+test('gated streaming never leaks XML tool calls: character-by-character simulation', () => {
+  const samples = [
+    '我来查一下目录。\n<tool_call>\n<function=bash>\n<parameter=command>ls -la</parameter>\n</function>\n</tool_call>',
+    'Checking.\n```xml\n<tool_call>\n<function=bash>\n<parameter=command>pwd</parameter>\n</function>\n</tool_call>\n```',
+    'Running.\n<function_calls><invoke name="read_file"><parameter name="path">README.md</parameter></invoke></function_calls>',
+  ];
+
+  for (const finalText of samples) {
+    let forwarded = '';
+    for (let i = 0; i < finalText.length; i++) {
+      const partial = finalText.slice(0, i + 1);
+      const safe = findStreamingSafePrefixLength(partial);
+      if (safe > forwarded.length) {
+        const chunk = partial.slice(forwarded.length, safe);
+        forwarded += chunk;
+      }
+    }
+    const parsed = parseToolCallOutput(finalText);
+    assert.equal(parsed.type, 'tool_calls');
+    assert.equal(forwarded, finalText.slice(0, parsed.matchStart));
+    assert.equal(forwarded.includes('<tool_call'), false);
+    assert.equal(forwarded.includes('<function'), false);
+    assert.equal(forwarded.includes('```xml'), false);
+  }
 });

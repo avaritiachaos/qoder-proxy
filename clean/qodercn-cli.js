@@ -3,7 +3,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { AppError } = require('./errors');
 const { redactString } = require('./redact');
-const { resolveModelRoute } = require('./models');
+const { resolveModelRoute, parseCliModelList } = require('./models');
 const { buildToolSystemPrompt, formatToolResultForPrompt } = require('./tool-parser');
 
 const DEFAULT_TIMEOUT_MS = 300000;
@@ -876,6 +876,112 @@ function runQoderCnCliStream({
   });
 }
 
+/**
+ * Query `<cli> --list-models` to dynamically discover the models available to
+ * the currently authenticated user (including newly added frontier models and
+ * BYOK custom models).
+ */
+function listCliModels({ timeoutMs = 15000, rootDir = process.cwd() } = {}) {
+  const backend = getCliBackend();
+  const token = (process.env[backend.tokenEnvVar] || '').trim();
+  const command = resolveCliCommand(process.env.CLI_COMMAND || process.env.QODERCN_CLI_PATH || backend.command);
+  const spawnSpec = buildSpawnCommand(command, ['--list-models'], backend);
+  const env = token ? buildChildEnv(rootDir, token, backend) : { ...process.env };
+
+  return new Promise((resolve, reject) => {
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    let settled = false;
+    let timedOut = false;
+    let forceSettleTimer = null;
+    let exitFallbackTimer = null;
+
+    const child = spawn(spawnSpec.command, spawnSpec.args, {
+      cwd: rootDir,
+      env,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(forceSettleTimer);
+      clearTimeout(exitFallbackTimer);
+      fn(value);
+    };
+
+    const timeoutError = () =>
+      new AppError(504, 'upstream_timeout', `${backend.command} --list-models timed out.`);
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+      forceSettleTimer = setTimeout(() => {
+        finish(reject, timeoutError());
+      }, 3000);
+    }, timeoutMs);
+
+    child.stdout.on('data', (chunk) => {
+      try {
+        stdoutBytes = appendChunk(stdoutChunks, chunk, stdoutBytes);
+      } catch (error) {
+        child.kill();
+        finish(reject, error);
+      }
+    });
+
+    child.stderr.on('data', (chunk) => {
+      try {
+        stderrBytes = appendChunk(stderrChunks, chunk, stderrBytes);
+      } catch (error) {
+        child.kill();
+        finish(reject, error);
+      }
+    });
+
+    child.on('error', (error) => {
+      finish(
+        reject,
+        new AppError(
+          500,
+          'cli_spawn_failed',
+          `Failed to start ${backend.command} --list-models: ${redactString(error.message)}`
+        )
+      );
+    });
+
+    const handleClose = (code) => {
+      if (settled) return;
+      if (timedOut) {
+        finish(reject, timeoutError());
+        return;
+      }
+      const stdout = Buffer.concat(stdoutChunks).toString('utf8');
+      const stderr = Buffer.concat(stderrChunks).toString('utf8');
+      if (code !== 0) {
+        const detail = redactString(stderr || stdout).trim();
+        const suffix = detail ? ` ${detail.slice(0, 240)}` : '';
+        finish(reject, new AppError(502, 'model_list_failed', `${backend.command} --list-models failed.${suffix}`));
+        return;
+      }
+      finish(resolve, parseCliModelList(stdout));
+    };
+
+    child.on('exit', (code) => {
+      exitFallbackTimer = setTimeout(() => handleClose(code), 1500);
+    });
+
+    child.on('close', (code) => {
+      clearTimeout(exitFallbackTimer);
+      handleClose(code);
+    });
+  });
+}
+
 module.exports = {
   ATTACHMENT_INSTRUCTION,
   buildCliArgs,
@@ -887,6 +993,7 @@ module.exports = {
   extractStreamDelta,
   fixLongAppendSystemPrompt,
   getCliBackend,
+  listCliModels,
   normalizeMessages,
   resolveCliCommand,
   runQoderCnCli,

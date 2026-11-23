@@ -396,3 +396,113 @@ test('fixLongAppendSystemPrompt uses the tighter cmd.exe limit', () => {
     fs.rmSync(attachment, { force: true });
   }
 });
+
+test('OpenAI streaming converts XML <tool_call> output into structured delta.tool_calls without leaking XML', async () => {
+  const originalStream = qoderCli.runQoderCnCliStream;
+  const fullXmlReply =
+    '我来查一下。\n<tool_call>\n<function=read_file>\n<parameter=path>/tmp/test.txt</parameter>\n</function>\n</tool_call>';
+  qoderCli.runQoderCnCliStream = async ({ onDelta }) => {
+    // Split mid-tag to exercise the streaming gate's partial-prefix withholding.
+    onDelta('我来查一下。\n<tool_');
+    onDelta('call>\n<function=read_file>\n<parameter=path>/tmp/test.txt');
+    onDelta('</parameter>\n</function>\n</tool_call>');
+    return fullXmlReply;
+  };
+  const { server, baseUrl } = await listen(createApp());
+  try {
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        stream: true,
+        messages: [{ role: 'user', content: 'read the file' }],
+        tools: OPENAI_TOOLS,
+      }),
+    });
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    const chunks = text
+      .split('\n')
+      .map((line) => line.replace(/^data: /, '').trim())
+      .filter((line) => line && line !== '[DONE]')
+      .map((line) => JSON.parse(line));
+
+    const streamedText = chunks
+      .filter((chunk) => chunk.choices?.[0]?.delta?.content)
+      .map((chunk) => chunk.choices[0].delta.content)
+      .join('');
+    assert.equal(streamedText, '我来查一下。\n');
+
+    const toolCallChunk = chunks.find((chunk) => chunk.choices?.[0]?.delta?.tool_calls);
+    assert.ok(toolCallChunk);
+    const call = toolCallChunk.choices[0].delta.tool_calls[0];
+    assert.equal(call.function.name, 'read_file');
+    assert.deepEqual(JSON.parse(call.function.arguments), { path: '/tmp/test.txt' });
+    assert.match(text, /"finish_reason":"tool_calls"/);
+  } finally {
+    qoderCli.runQoderCnCliStream = originalStream;
+    server.close();
+  }
+});
+
+test('OpenAI non-streaming converts XML <tool_call> output into structured tool_calls', async () => {
+  const originalRun = qoderCli.runQoderCnCli;
+  qoderCli.runQoderCnCli = async () =>
+    'Checking file.\n<tool_call><function=read_file><parameter=path>/tmp/a.txt</parameter></function></tool_call>';
+  const { server, baseUrl } = await listen(createApp());
+  try {
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: 'read /tmp/a.txt' }],
+        tools: OPENAI_TOOLS,
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.choices[0].finish_reason, 'tool_calls');
+    assert.equal(body.choices[0].message.content, 'Checking file.');
+    assert.equal(body.choices[0].message.tool_calls.length, 1);
+    assert.equal(body.choices[0].message.tool_calls[0].function.name, 'read_file');
+    assert.deepEqual(JSON.parse(body.choices[0].message.tool_calls[0].function.arguments), {
+      path: '/tmp/a.txt',
+    });
+  } finally {
+    qoderCli.runQoderCnCli = originalRun;
+    server.close();
+  }
+});
+
+test('Anthropic streaming converts bare XML <tool_call> into tool_use without opening a text block', async () => {
+  const originalStream = qoderCli.runQoderCnCliStream;
+  const xmlReply =
+    '<tool_call><function=read_file><parameter=path>/tmp/test.txt</parameter></function></tool_call>';
+  qoderCli.runQoderCnCliStream = async ({ onDelta }) => {
+    onDelta('<tool');
+    onDelta('_call><function=read_file><parameter=path>/tmp/test.txt</parameter></function></tool_call>');
+    return xmlReply;
+  };
+  const { server, baseUrl } = await listen(createApp());
+  try {
+    const response = await fetch(`${baseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        stream: true,
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: 'read the file' }],
+        tools: ANTHROPIC_TOOLS,
+      }),
+    });
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    assert.match(text, /"type":"content_block_start","index":0,"content_block":\{"type":"tool_use"/);
+    assert.equal(text.includes('"type":"text_delta"'), false);
+    assert.match(text, /"name":"read_file"/);
+    assert.match(text, /"stop_reason":"tool_use"/);
+  } finally {
+    qoderCli.runQoderCnCliStream = originalStream;
+    server.close();
+  }
+});

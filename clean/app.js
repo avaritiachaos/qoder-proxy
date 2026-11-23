@@ -6,7 +6,7 @@ const { anthropicError, openAiError, AppError } = require('./errors');
 const { apiKeyGuard, isAllowedOrigin, localOnlyGuard } = require('./auth');
 const { log } = require('./logger');
 const qoderCli = require('./qodercn-cli');
-const { DEFAULT_MODEL_ID, MODELS } = require('./models');
+const { DEFAULT_MODEL_ID, getActiveModels, setDynamicModels } = require('./models');
 const {
   anthropicToOpenAiMessages,
   createAnthropicMessage,
@@ -19,6 +19,7 @@ const {
   parseToolCallOutput,
   findStreamingSafePrefixLength,
   generateCallId,
+  hasUnparsedToolCallMarkup,
   normalizeOpenAiTools,
   normalizeAnthropicTools,
   formatToolResultForPrompt,
@@ -261,9 +262,69 @@ function writeChatCompletionStream(res, { model, content, parsedOutput }) {
   res.end();
 }
 
-function createApp() {
+const DEFAULT_DYNAMIC_MODELS_TTL_MS = 10 * 60 * 1000;
+const DYNAMIC_MODELS_RETRY_BACKOFF_MS = 60 * 1000;
+const DYNAMIC_MODELS_WAIT_MS = 8000;
+
+function unrefDelay(ms) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+  });
+}
+
+function createApp(options = {}) {
   const app = express();
   app.disable('x-powered-by');
+
+  const enableDynamicModels = Boolean(options.enableDynamicModels);
+  const dynamicModelsTtlMs = Number(
+    options.dynamicModelsTtlMs || process.env.DYNAMIC_MODELS_TTL_MS || DEFAULT_DYNAMIC_MODELS_TTL_MS
+  );
+  let lastModelsRefreshAt = 0;
+  let inFlightModelsRefresh = null;
+
+  function refreshDynamicModels({ force = false } = {}) {
+    const now = Date.now();
+    if (!force && lastModelsRefreshAt > 0 && now - lastModelsRefreshAt < dynamicModelsTtlMs) {
+      return Promise.resolve(getActiveModels());
+    }
+    if (inFlightModelsRefresh) {
+      return inFlightModelsRefresh;
+    }
+
+    inFlightModelsRefresh = Promise.resolve()
+      .then(() => qoderCli.listCliModels())
+      .then((discovered) => {
+        if (Array.isArray(discovered) && discovered.length > 0) {
+          setDynamicModels(discovered);
+          lastModelsRefreshAt = Date.now();
+          log('dynamic models refreshed', {
+            count: discovered.length,
+            models: discovered.map((m) => m.id),
+          });
+        } else {
+          lastModelsRefreshAt = Date.now() - dynamicModelsTtlMs + DYNAMIC_MODELS_RETRY_BACKOFF_MS;
+          log('warning: CLI returned no models; keeping fallback list');
+        }
+        return getActiveModels();
+      })
+      .catch((error) => {
+        // Back off briefly so failed discovery does not hammer the CLI on every request.
+        lastModelsRefreshAt = Date.now() - dynamicModelsTtlMs + DYNAMIC_MODELS_RETRY_BACKOFF_MS;
+        log('warning: dynamic model discovery failed; using fallback list', {
+          message: error.message,
+        });
+        return getActiveModels();
+      })
+      .finally(() => {
+        inFlightModelsRefresh = null;
+      });
+
+    return inFlightModelsRefresh;
+  }
+
+  app.refreshDynamicModels = refreshDynamicModels;
 
   // Reject foreign Hosts and cross-origin browser requests before anything
   // else, so a disallowed origin cannot even complete a CORS preflight.
@@ -298,10 +359,23 @@ function createApp() {
   app.use(['/v1', '/v1/v1'], apiKeyGuard);
   app.use('/usage', apiKeyGuard);
 
-  app.get(['/v1/models', '/models', '/v1/v1/models'], (_req, res) => {
+  app.get(['/v1/models', '/models', '/v1/v1/models'], async (req, res) => {
+    const forceRefresh = /^(1|true)$/i.test(String(req.query?.refresh || ''));
+    if (forceRefresh) {
+      await Promise.race([refreshDynamicModels({ force: true }), unrefDelay(DYNAMIC_MODELS_WAIT_MS)]);
+    } else if (enableDynamicModels) {
+      if (lastModelsRefreshAt === 0) {
+        await Promise.race([refreshDynamicModels(), unrefDelay(DYNAMIC_MODELS_WAIT_MS)]);
+      } else if (Date.now() - lastModelsRefreshAt >= dynamicModelsTtlMs) {
+        // Stale-while-revalidate: answer immediately with cached models and refresh in background.
+        refreshDynamicModels().catch(() => {});
+      }
+    }
+
+    const activeModels = getActiveModels();
     res.json({
       object: 'list',
-      data: MODELS.map((model) => ({
+      data: activeModels.map((model) => ({
         id: model.id,
         object: 'model',
         created: 0,
@@ -505,13 +579,19 @@ function createApp() {
           return;
         }
 
-        const parsedOutput = parseToolCallOutput(fullText);
+        const parsedOutput = parseToolCallOutput(fullText, normalizedTools);
         const isToolCalls = parsedOutput.type === 'tool_calls';
         if (isToolCalls) {
           log('chat tool calls detected', {
             tool_count: parsedOutput.toolCalls.length,
             tools: parsedOutput.toolCalls.map((t) => t.name),
             streamed: true,
+          });
+        } else if (hasUnparsedToolCallMarkup(fullText)) {
+          log('warning: unparsed tool-call markup fell back to text', {
+            model,
+            streamed: true,
+            length: fullText.length,
           });
         }
 
@@ -612,13 +692,20 @@ function createApp() {
         // Parse the output for tool calls if tools were provided
         let parsedOutput = null;
         if (normalizedTools) {
-          parsedOutput = parseToolCallOutput(content);
+          parsedOutput = parseToolCallOutput(content, normalizedTools);
           if (parsedOutput && parsedOutput.type === 'tool_calls') {
             log('chat tool calls detected', {
               tool_count: parsedOutput.toolCalls.length,
               tools: parsedOutput.toolCalls.map((t) => t.name),
             });
           } else {
+            if (hasUnparsedToolCallMarkup(content)) {
+              log('warning: unparsed tool-call markup fell back to text', {
+                model,
+                streamed: false,
+                length: content.length,
+              });
+            }
             log('chat no tool calls detected', { response_type: parsedOutput?.type || 'text' });
           }
         }
@@ -917,13 +1004,20 @@ function createApp() {
           return;
         }
 
-        const parsedOutput = parseToolCallOutput(fullText);
+        const parsedOutput = parseToolCallOutput(fullText, tools);
         const isToolCalls = parsedOutput.type === 'tool_calls';
         if (isToolCalls) {
           log('anthropic tool calls detected', {
             tool_count: parsedOutput.toolCalls.length,
             tools: parsedOutput.toolCalls.map((t) => t.name),
             streamed: true,
+          });
+        } else if (hasUnparsedToolCallMarkup(fullText)) {
+          log('warning: unparsed tool-call markup fell back to text', {
+            model,
+            endpoint: 'anthropic',
+            streamed: true,
+            length: fullText.length,
           });
         }
 
@@ -1028,13 +1122,21 @@ function createApp() {
         // Parse the output for tool calls if tools were provided
         let parsedOutput = null;
         if (tools) {
-          parsedOutput = parseToolCallOutput(content);
+          parsedOutput = parseToolCallOutput(content, tools);
           if (parsedOutput && parsedOutput.type === 'tool_calls') {
             log('anthropic tool calls detected', {
               tool_count: parsedOutput.toolCalls.length,
               tools: parsedOutput.toolCalls.map((t) => t.name),
             });
           } else {
+            if (hasUnparsedToolCallMarkup(content)) {
+              log('warning: unparsed tool-call markup fell back to text', {
+                model,
+                endpoint: 'anthropic',
+                streamed: false,
+                length: content.length,
+              });
+            }
             log('anthropic no tool calls detected', { response_type: parsedOutput?.type || 'text' });
           }
         }

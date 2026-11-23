@@ -1,4 +1,6 @@
-// Model registry aligned with `qodercli --list-models` (qodercli 1.1.41).
+// Static fallback model registry aligned with `qodercli --list-models` (qodercli 1.1.41).
+// At runtime, the proxy can dynamically discover live models from `<cli> --list-models`
+// so newly launched or custom models work without manual updates.
 const MODELS = [
   { id: 'qoder-cn', name: 'Qoder CN Auto', cliModel: 'auto', reasoning: true },
   { id: 'auto', name: 'Auto', cliModel: 'auto', reasoning: true },
@@ -29,10 +31,145 @@ const MODELS = [
 ];
 
 const DEFAULT_MODEL_ID = 'qoder-cn';
-const EFFORT_SUFFIX_RE = /^(.*)-effort-(low|medium|high|max)$/;
+const EFFORT_SUFFIX_RE = /^(.*)-effort-(low|medium|high|xhigh|max)$/;
+
+let dynamicModels = null;
+
+function stripAnsi(text) {
+  return String(text || '').replace(/\u001b\[[0-9;]*m/g, '');
+}
+
+function normalizeModelId(raw) {
+  return String(raw || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '-');
+}
+
+/**
+ * Parse stdout from `qoderclicn --list-models` / `qodercli --list-models`.
+ *
+ * Format emitted by Qoder CLI:
+ *   MODEL
+ *   Auto
+ *   Qwen4-Max
+ *   My Custom Model (provider/model-id)
+ */
+function parseCliModelList(stdout) {
+  const lines = stripAnsi(stdout)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const parsed = [];
+  const seenIds = new Set();
+
+  for (const line of lines) {
+    if (/^MODEL(?:\s+.*)?$/i.test(line)) continue;
+    if (/^[-─=]+$/.test(line)) continue;
+    if (/^(?:Warning:|Failed |Error:|Assertion failed:|Not logged in)/i.test(line)) continue;
+
+    let name = line;
+    let cliModel = line;
+
+    const parenMatch = line.match(/^(.+?)\s+\(([^()]+)\)$/);
+    if (parenMatch) {
+      const displayName = parenMatch[1].trim();
+      const rawKey = parenMatch[2].trim();
+      name = displayName;
+      // CLI truncates keys > 40 chars with a trailing ellipsis; use the raw key
+      // when intact (needed for custom modelIDs) and fall back to displayName otherwise.
+      cliModel = rawKey && !rawKey.endsWith('…') && !rawKey.endsWith('...') ? rawKey : displayName;
+    }
+
+    const id = normalizeModelId(cliModel);
+    if (!id || seenIds.has(id)) continue;
+    seenIds.add(id);
+
+    parsed.push({
+      id,
+      name,
+      cliModel,
+      reasoning: true,
+    });
+  }
+
+  return parsed;
+}
+
+function setDynamicModels(models) {
+  if (!Array.isArray(models) || models.length === 0) {
+    dynamicModels = null;
+    return;
+  }
+  dynamicModels = models.map((model) => ({
+    id: model.id,
+    name: model.name || model.cliModel || model.id,
+    cliModel: model.cliModel || model.name || model.id,
+    reasoning: model.reasoning !== false,
+    ...(model.effortAlias ? { effortAlias: true } : {}),
+  }));
+}
+
+function clearDynamicModels() {
+  dynamicModels = null;
+}
+
+function getActiveModels() {
+  if (!dynamicModels || dynamicModels.length === 0) {
+    return MODELS;
+  }
+
+  const active = [];
+  const seenIds = new Set();
+
+  // Always preserve the default proxy alias (`qoder-cn` -> `auto`).
+  const defaultEntry = MODELS.find((m) => m.id === DEFAULT_MODEL_ID);
+  if (defaultEntry) {
+    active.push(defaultEntry);
+    seenIds.add(defaultEntry.id);
+  }
+
+  for (const model of dynamicModels) {
+    if (!model?.id || seenIds.has(model.id)) continue;
+    active.push(model);
+    seenIds.add(model.id);
+
+    // Keep any static effort aliases whose base model is present in the live catalog.
+    for (const alias of MODELS) {
+      if (!alias.effortAlias || seenIds.has(alias.id)) continue;
+      const match = alias.id.match(EFFORT_SUFFIX_RE);
+      if (match && match[1] === model.id) {
+        active.push(alias);
+        seenIds.add(alias.id);
+      }
+    }
+  }
+
+  return active;
+}
+
+function findModelInList(list, modelId) {
+  if (!Array.isArray(list) || !modelId) return undefined;
+  const exact = list.find((model) => model.id === modelId);
+  if (exact) return exact;
+
+  const lower = String(modelId).trim().toLowerCase();
+  if (!lower) return undefined;
+  return list.find(
+    (model) =>
+      model.id.toLowerCase() === lower ||
+      String(model.cliModel || '').toLowerCase() === lower
+  );
+}
 
 function getModel(modelId) {
-  return MODELS.find((model) => model.id === modelId);
+  if (!modelId) return undefined;
+  if (dynamicModels) {
+    const found = findModelInList(dynamicModels, modelId);
+    if (found) return found;
+  }
+  return findModelInList(MODELS, modelId);
 }
 
 function resolveCliModel(modelId) {
@@ -56,7 +193,11 @@ function resolveModelRoute(modelId) {
 module.exports = {
   DEFAULT_MODEL_ID,
   MODELS,
+  clearDynamicModels,
+  getActiveModels,
   getModel,
+  parseCliModelList,
   resolveCliModel,
   resolveModelRoute,
+  setDynamicModels,
 };

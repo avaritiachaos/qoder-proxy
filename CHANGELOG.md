@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-23
+
+### Fixed
+
+- **XML-formatted tool calls are no longer silently passed through as plain text (#13)**:
+  - `parseToolCallOutput` now parses XML tool-call formats emitted when models fall back to native XML weights despite the JSON `[Tool Protocol]` — including `<tool_call><function=...><parameter=...>`, Hermes JSON inside `<tool_call>`, Anthropic `<function_calls>/<invoke>`, bare `<function=...>`, and ```` ```xml ````-fenced tool calls, with tool-schema-aware parameter type coercion and truncation safety.
+  - Updated the streaming safety gate (`findStreamingSafePrefixLength`) to withhold XML tool-call opening tags and partial prefixes across chunks so XML payloads never leak into visible text deltas while prose prefixes still stream live.
+  - Added warning logs whenever a tool-declared response falls back to plain text despite containing unparsed tool-call markup.
+
+### Added
+
+- **Dynamic CLI model discovery**: on startup and via `/v1/models` (with 10-minute TTL cache and `?refresh=1` force-refresh), the proxy now queries `<cli> --list-models` to automatically register newly launched frontier models and BYOK custom models for the active account, falling back to the built-in static list if discovery fails or `DYNAMIC_MODELS=0` is set.
+- **Extended reasoning effort routing**: `EFFORT_SUFFIX_RE` now supports `xhigh` (`-effort-xhigh`) in addition to `low`, `medium`, `high`, and `max`, for both static and dynamically discovered models.
+- Case-insensitive model ID / CLI display name matching in `getModel` (e.g. `Qwen4-Max` resolves directly without falling back to `auto`).
+
 ## [1.6.0] - 2026-09-05
 
 ### Changed
